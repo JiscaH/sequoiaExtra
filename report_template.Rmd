@@ -1,0 +1,320 @@
+---
+title: "Sequoia report"
+output:
+  html_document: default
+  pdf_document: default
+  bookdown::gitbook: default
+editor_options: 
+  markdown: 
+    wrap: 80
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(kableExtra)
+library(sequoia)
+```
+
+```{r input, include=FALSE}
+
+# GenoM <- GenoConvert('MyGenotypeData.txt')   # optional, or set to NULL
+# SeqOUT <- readRDS('MySequoiaOutput.rds')
+# Conf <- readRDS('MyEstConfOutput.rds')       # optional, or set to NULL
+# Maybe <- readRDS('MyGetMaybeRelOutput.rds')  # optional, or set to NULL
+
+GenoM <- Geno_griffin
+SeqOUT <- SeqOUT_griffin
+Conf <- Conf_griffin   
+Maybe <- NULL   
+```
+
+------------------------------------------------------------------------
+
+This pedigree was reconstructed using the R package `sequoia`.
+
+This package reconstructs the pedigree in two steps: first genotyped parents are
+assigned to genotyped offspring ('parentage assignment'), followed by clustering
+of siblings sharing a non-genotyped parent and assignment of grandparents ('full
+pedigree reconstruction').
+
+------------------------------------------------------------------------
+
+# Comments
+
+This is a overview of the pedigree reconstruction for Griffins born 2001-2010.
+
+
+
+------------------------------------------------------------------------
+
+# Input summary
+
+## Parameter settings
+
+```{r specs}
+kable(as.data.frame(t(SeqOUT$Specs)), booktabs=TRUE) %>%
+  kable_styling(full_width = FALSE)
+```
+
+Genotyping error: probability that actual genotype 'act' (rows) is observed as 
+genotype 'obs' (columns).
+```{r ErrM}
+kable(SeqOUT$ErrM,
+      caption = 'Presumed genotyping error rate', booktabs=TRUE) %>%
+  kable_styling(full_width = FALSE)
+# Note: this error matrix can be fully customised, see ?ErrToM
+```
+
+## Genetic data
+
+```{r SnpStats, fig.width=8, fig.height=8, out.width='90%'}
+if (!is.null(GenoM)) {
+  SnpStats(GenoM)
+} else {
+  cat('No genotype matrix provided for this report. \n')
+}
+# Note1: SNPs with missingness >=90% (scored for <10% of individuals) are 
+#       automatically excluded.
+# Note2: Higher MAF is better. Monomorphic SNPs are automatically excluded.
+# Note3: Very strong departure from HWE may affect pedigree reconstruction. 
+```
+
+## Life history data
+
+In sequoia, sex is coded as 1=female, 2=male, 3=unknown, 4=hermaphrodite.
+
+```{r LH-sex}
+table(Sex = SeqOUT$LifeHist$Sex)
+```
+
+Unknown birth years may hinder pedigree reconstruction. Among others, they are
+used to determine which individual is the parent, and which the offspring in
+genetically identified parent-offspring pairs.
+
+```{r LH-noBY}
+LH <- SeqOUT$LifeHist
+
+table('Birth Year' = factor(LH$BirthYear <0, levels = c(FALSE, TRUE), 
+                            labels = c('known', 'missing')),
+      'min/max Birth Year' = factor(LH$BY.min <0 & LH$BY.max <0, 
+                                    levels = c(FALSE, TRUE), 
+                                    labels = c('known', 'missing')))
+```
+
+```{r LH-BY, fig.width=6, fig.height=4, out.width='70%'}
+hist(LH$BirthYear, 
+     breaks = c(min(LH$BirthYear, na.rm=TRUE) : (max(LH$BirthYear, na.rm=TRUE)+1)) -.5,
+     main = 'Distribution of birth years', xlab='')
+```
+
+## Age distribution prior
+
+The 'age prior' specifies the minimum and maximum age of parents, and the age
+difference distribution between siblings.
+
+By default, for parentage assignment a flat prior is used with maximum parental
+age equal to the largest age difference between genotyped individuals. The
+maximum age for dams and sires can also be specified, as can discrete versus
+overlapping generations. The distribution can also be fully customised.
+
+This age difference distribution is updated after parentage assignment and
+before full pedigree reconstruction (see further).
+
+```{r AP-in, fig.width=6, fig.height=4, out.width='70%'}
+if (!is.null(GenoM)) {
+  LH_a <- LH[LH$ID %in% rownames(GenoM),]
+} else {
+  LH_a <- LH
+}
+AP_IN <- do.call(MakeAgePrior, c(list(Pedigree = NULL,
+                                      LifeHistData = LH_a),
+                                 SeqOUT$args.AP))
+# Note: Details about and help on the age prior can be found in 
+#       vignette("Sequoia - Age 'Prior'")
+```
+
+```{r AP-args}
+SeqOUT$args.AP
+```
+
+------------------------------------------------------------------------
+
+# Output summary
+
+## Pedigree summary
+
+Sibling clusters sharing a non-genotyped parent are assigned a 'dummy' parent.
+Via grandparent assignment to sibling clusters, parents are assigned to these
+dummy individuals. These grandparents may be both genotyped or dummy
+individuals.
+
+Identifying the real non-genotyped individual corresponding to each dummy
+individual may not always be possible, but the [`sequoia`
+website](https://jiscah.github.io/articles/pedcompare_example.html) offers some
+suggestions when candidates are known.
+
+```{r sumry-plots, fig.width=7, fig.height=4.5, out.width='100%'}
+sumry <- SummarySeq(SeqOUT, Plot=FALSE)
+PlotSeqSum(sumry, SeqOUT$Pedigree, Panels='all', ask=FALSE)
+```
+
+The distributions of the number of opposing homozygous loci and other Mendelian
+errors in parent-offspring pairs and parent-parent-offspring trios give a rough
+impression of the genotyping error rate. These would always be zero in absence
+of any genotyping errors (and in absence of pedigree errors).
+
+The distributions of the log10 likelihood ratios give a rough impression of the
+power of the genetic data to distinguish between different types of
+relationships and resolve the pedigree. Note that this is the likelihood ratio
+between the assigned parent being the parent versus it being another type of
+close relative, such as a full sibling of the focal individual or the true
+parent. It is *not* relative to other candidate parents of the focal individual.
+
+```{r sumry-tbl}
+kable(sumry$PedSummary, booktabs=TRUE) %>%
+  kable_styling(full_width = FALSE)
+```
+
+The size, depth and interconnectedness of the pedigree affect the power with
+which the pedigree can be used in subsequent analyses, such as heritability
+estimates.
+
+
+## Age distribution
+
+After assignment of genotyped parents to genotyped offspring, the reconstructed
+pedigree is combined with the provided birth year information to estimate the
+distribution of age differences among mother-offspring, father-offspring, and
+sibling pairs. This age distribution is then used during further pedigree
+reconstruction.
+
+```{r age, fig.width=6, fig.height=4, out.width='70%'}
+PlotAgePrior(SeqOUT$AgePriors)
+```
+
+
+### Estimated birth years
+
+When a birth year is unknown, it is estimated from combining the above
+distribution of parental ages with any known birth years of its assigned parents
+and offspring.
+
+```{r estBY}
+LH_new <- SeqOUT$LifeHistSib
+LH_new[LH_new$BirthYear < 0, ]
+```
+
+### Inferred sex
+
+When the sex of an individual is missing from the input, it may be
+inferred during pedigree reconstruction when this individual forms a
+complementary parent pair with an individual of known sex (in species
+without hermaphrodites).
+
+```{r newsex}
+LH_new[LH_new$Sex == 3 & LH_new$Sexx != 3, ]
+```
+
+
+## Non-assigned likely relatives
+
+The `sequoia` algorithm is rather conservative when making assignments; it
+sequentially 'grows' the pedigree, and tries to avoid a snowball effect of
+assignment errors. So, when no parent or siblings are assigned, this does not
+necessarily mean these are not present in the dataset.
+
+The R package includes a separate function to identify pairs of likely relatives
+that have not been assigned, which may be due to a variety of reasons.
+
+```{r mayberel}
+if (!is.null(Maybe)) {
+  MaybePO <- GetRelM(Pairs=Maybe$MaybePar)
+  PlotRelPairs(MaybePO)
+  if ('MaybeRel' %in% names(Maybe)) {
+    MaybeM <- GetRelM(Pairs=Maybe$MaybeRel)
+    PlotRelPairs(MaybeM)
+  }
+  
+} else if (!is.null(Maybe)) {
+  Maybe <- GetMaybeRel(GenoM, SeqList = SeqOUT, Module = 'ped', quiet=TRUE)
+  MaybeM <- GetRelM(Pairs=Maybe$MaybeRel)
+  PlotRelPairs(MaybeM)
+
+} else {
+  cat("No 'maybe relatives' provided for this report. \n")
+}
+```
+
+
+## Confidence probabilities
+
+The assignment accuracy is estimated from simulations. These simulations make
+several simplifying assumptions, and these numbers are therefore a lower bound
+for the confidence probability.
+
+The probability is not estimated for each individual separately. Instead, they
+are grouped across a few categories, based on whether the parent is dam or sire,
+genotyped or a dummy, and whether there is a co-parent or not. It is also
+separated for genotyped versus dummy focal individuals.
+
+```{r conf}
+if (!is.null(Conf)) {
+  kable(Conf$ConfProb,
+        caption = 'parent-pair confidence, per category (Genotyped/Dummy/None)')
+} else {
+  cat('No confidence probabilities provided for this report. \n')
+}
+```
+
+
+
+------------------------------------------------------------------------
+
+# Further details
+
+## Likelihood curve
+
+The total likelihood is the probability of observing the genetic data,
+given the inferred pedigree and the presumed genotyping error rate. The
+initial likelihood is the probability if all genotyped individuals were
+unrelated and sampled from a large population in Hardy-Weinberg
+Equilibrium. The likelihood increases during pedigree reconstruction,
+and pedigree reconstruction is terminated when the total likelihood
+asymptotes.
+
+```{r totlik, fig.width=6, fig.height=4, out.width='70%'}
+nIt <- c(par = length(SeqOUT$TotLikPar),
+         ped = length(SeqOUT$TotLikSib))
+with(SeqOUT, plot(1:nIt[1], TotLikPar, type="b", lwd=2, col="forestgreen",
+                  xlim=c(1, sum(nIt)-1), xlab="Iteration (ped)", xaxt='n', cex.lab=1.2,
+                  ylim=c(min(TotLikPar), max(TotLikSib)), ylab="Total log-likelihood"))
+with(SeqOUT, lines((nIt[1]-1) + 1:nIt[2], TotLikSib, type="b", lwd=2))
+axis(1, at=1, labels = 'HWE', cex.axis=1.2, col.axis='darkgrey')
+axis(1, at=(nIt[1]+1)/2, labels = 'par', lwd.ticks=0, col.axis='forestgreen', 
+     cex.axis=1.2)
+axis(1, at=(nIt[1]):(nIt[1]+nIt[2]), labels=0:nIt[2], cex.axis=1.2)
+```
+
+
+## Genotyping error estimate
+
+This estimate is based on Mendelian inconsistencies between assigned
+parent-offspring pairs. It is a ballpark estimate of the genotyping
+error for each SNP, as not all genotyping errors result in such
+inconsistencies, and true parent-offspring pairs with many
+inconsistencies are less likely to be assigned. On the other hand, a
+single genotyping error in an individual with many offspring may lead to
+a high number of Mendelian inconsistencies.
+
+```{r SnpStats-2, fig.width=5, fig.height=4, out.width='70%'}
+if (!is.null(GenoM)) {
+  sstats <- suppressWarnings(
+    SnpStats(GenoM, Pedigree = SeqOUT$Pedigree,
+             ErrFlavour = SeqOUT$Specs$ErrFlavour, Plot=FALSE))
+  hist(sstats[,'Err.hat'], breaks = nrow(sstats)/5, 
+       main = 'Estimated genotyping error', xlab='')
+} else {
+  cat('No genotype matrix provided for this report. \n')
+}
+```
