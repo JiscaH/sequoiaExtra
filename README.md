@@ -9,3 +9,9 @@ Use with caution, as they do not include input checks yet.
 
 Feedback and feature requests are very welcome! Or if you'd like to share some of
 your own sequoia-related functions here, please do contact me!
+
+To use:
+- click on the file
+- click on 'raw'
+- copy the URL
+- `source("URL")`
