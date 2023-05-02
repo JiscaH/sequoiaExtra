@@ -27,7 +27,7 @@ BirthDate2Quarter <- function(BirthDate,
     B.Year <- as.numeric(format(BirthDate, '%Y')) - Year1
     B.Month <- as.numeric(format(BirthDate, '%m'))
   }
-  if (any(B.Year < 0))  stop('Some BirthDates are before Year1')
+  if (any(!is.na(B.Year) & B.Year < 0))  stop('Some BirthDates are before Year1')
   
   Quart.num <- 4*B.Year + ceiling(B.Month/3)  # round up
   
