@@ -6,6 +6,7 @@
 ! It's an extremely minimalistic version of sequoia, which should hopefully be useful for finding pedigree errors in both the nucleus herd as in the multiplication herds, as well as 
 
 ! compile: gfortran -std=f95 -fall-intrinsics -O3 pedigree_checker.f90 -o PedChecker
+! gfortran -std=f95 -fall-intrinsics -Wall -pedantic -fbounds-check -g -Og pedigree_checker.f90 -o PedChecker
 
 ! ##############################################################################
 ! ##  Global variables  ##
@@ -14,12 +15,12 @@
 module global
   implicit none
 
-  integer :: nInd, nSnp, nTrios, ID_len
+  integer :: nInd, nSnp, nTrios, ID_len, nRel
   integer, parameter :: nchar_filename = 2000, nchar_ID = 40
   integer,allocatable,dimension(:,:) :: Genos, Trios
   logical :: quiet
-  double precision :: OcA(-1:2,3), OKA2P(-1:2,3,3)
-  double precision, parameter :: Missing = 9999D0
+  double precision :: OcA(-1:2,3), OKA2P(-1:2,3,3), AKA2P(3,3,3)
+  double precision, parameter :: Missing = 999D0
   double precision, allocatable, dimension(:,:) :: AHWE, OHWE
   double precision, allocatable, dimension(:,:,:) :: AKAP, OKAP
   double precision, allocatable, dimension(:,:,:,:,:,:) :: LL_trio
@@ -122,6 +123,7 @@ program pedigree_checker
   OutFileName = 'Pedigree_OUT.txt'
   Er = 0.005  
   CalcProbs = .TRUE.   ! transform log10-likelihoods into probabilities
+  nRel = 5  ! number of relationships: PO, GP/FA/HS, HA/3rd, UU, (FS)
   quiet = .FALSE.
 
 
@@ -160,7 +162,10 @@ program pedigree_checker
         case ('--err')
           i = i+1
           call get_command_argument(i, argOption)
-          read(argOption, *)  Er   ! TODO: test
+          read(argOption, *)  Er   ! TODO: 1 or 3 
+          
+        case ('--noFS')
+          nRel = 4
           
         case ('--LLR')
           CalcProbs = .FALSE.
@@ -211,7 +216,7 @@ program pedigree_checker
 
   ! calculate log-likelihoods
   if (.not. quiet)  print *, "Calculating log-likelihoods ... "
-  allocate(LL_out_array(4,4,nTrios))
+  allocate(LL_out_array(nRel,nRel,nTrios))
   call Precalc_trioLLs()
   call CalcLL(LL_out_array)
 
@@ -226,6 +231,7 @@ program pedigree_checker
   !=========================
   contains
     subroutine print_help()
+        print '(a)',    'Calculate relationship probabilities of candidate parents'
         print '(a, /)', 'command-line options:'
         print '(a)',    '  -h, --help          print usage information and exit'
         print '(a)',    '  --trios <filename>  input file with e.g. pedigree: animal_id, dam_id,',&
@@ -255,14 +261,15 @@ subroutine ReadGeno(GenoFileName)
 
   character(len=nchar_filename), intent(IN) :: GenoFileName
   integer :: i, l
-  integer, allocatable, dimension(:,:) :: GenosR
+  integer, allocatable, dimension(:) :: GenosV
   character(len=3) :: maxchar_ID
+  character(len=nchar_ID) :: IDx
   
   
   nSnp = FileNumCol(trim(GenoFileName)) -1  ! column 1 = IDs
   nInd = FileNumRow(trim(GenoFileName))   
 
-  allocate(GenosR(nInd,nSnp))
+  allocate(GenosV(nSnp))
   allocate(Genos(nSnp, nInd))   ! transpose: faster
   Genos = -1
   allocate(Id(nInd))
@@ -271,21 +278,27 @@ subroutine ReadGeno(GenoFileName)
   ID_len = 5
 
   open (unit=101,file=trim(GenoFileName),status="old")
-  do i=1,nInd
-    read (101,*)  Id(i), GenosR(i,:)
-    do l=1,nSnp
-      if (GenosR(i,l)/=-9) then
-        Genos(l,i) = GenosR(i,l)  
+    do i=1,nInd
+      read (101,*)  IDx, GenosV
+      if (ANY(Id == IDx)) then
+        print *, "ERROR! IDs in genotype file must be unique"
+        stop
       endif
+      Id(i) = IDx
+      if (LEN_TRIM(Id(i)) > ID_len)  ID_len = LEN_TRIM(Id(i))
+      do l=1,nSnp
+        if (GenosV(l)>=0 .and. GenosV(l)<=2) then
+          Genos(l,i) = GenosV(l)  
+        endif
+      enddo 
     enddo
-    if (LEN_TRIM(Id(i)) > ID_len)  ID_len = LEN_TRIM(Id(i))
-  enddo
   close (101)
-  deallocate(GenosR)
+  
+  deallocate(GenosV)
 
   if (ID_len > nchar_ID) then
     write(maxchar_ID, '(i3)')  nchar_ID
-    print *, "Max length for IDs is "//maxchar_ID//" characters"
+    print *, "ERROR! Max length for IDs is "//maxchar_ID//" characters"
     stop
   endif
 
@@ -352,7 +365,7 @@ subroutine PrecalcProbs(Er)
 
   double precision, intent(IN) :: Er
   integer :: h,i,j,k,l
-  double precision ::  AF(nSnp), AKA2P(3,3,3), Tmp(3)
+  double precision ::  AF(nSnp), Tmp(3)
 
   ! allele frequencies
   do l=1,nSnp
@@ -547,12 +560,11 @@ subroutine Precalc_trioLLs
 
   ! assume that the two parents with genotypes y & z are unrelated. 
 
-  integer :: l, x, y, z, w, v
-  double precision :: Tmp(3), Tmp2(3,3)
+  integer :: l, x, y, z, w, v, u
+  double precision :: Tmp(3), Tmp2(3,3), Tmp3(3,3,3)
 
-  allocate(LL_trio(-1:2,3,3, nSnp, 4,4))  ! G_Off, G_dam, G_sire, snp, rel_1, rel_2 (PO/GP/HA/U)
+  allocate(LL_trio(-1:2,3,3, nSnp, nRel,nRel))  ! G_Off, G_dam, G_sire, snp, rel_1, rel_2 (PO/GP/HA/U)
   LL_trio = Missing
-  ! LL_trio(4,3,3, nSnp, 4,4)  ! G_Off, G_dam, G_sire, snp, rel_1, rel_2 (PO/GP/HA/U)
 
 
   do l = 1, nSnp
@@ -583,7 +595,7 @@ subroutine Precalc_trioLLs
           ! GP + GGP
           do w=1,3
             do v=1,3
-              Tmp2(w,v) = OKA2P(x,w,v) * AKAP(w,y,l) * SUM( AKAP(v,:,l) * AKAP(:,z,l) )
+              Tmp2(v,w) = OKA2P(x,w,v) * AKAP(w,y,l) * SUM( AKAP(v,:,l) * AKAP(:,z,l) )
             enddo
           enddo
           LL_trio(x,y,z,l, 2,3) = SUM( Tmp2 )
@@ -594,7 +606,7 @@ subroutine Precalc_trioLLs
           ! GGP + GGP
           do w=1,3
             do v=1,3
-              Tmp2(w,v) = OKA2P(x,w,v) * SUM( AKAP(w,:,l) * AKAP(:,y,l) ) * SUM( AKAP(v,:,l) * AKAP(:,z,l) )
+              Tmp2(v,w) = OKA2P(x,w,v) * SUM( AKAP(w,:,l) * AKAP(:,y,l) ) * SUM( AKAP(v,:,l) * AKAP(:,z,l) )
             enddo
           enddo
           LL_trio(x,y,z,l, 3,3) = SUM( Tmp2 )      
@@ -606,21 +618,65 @@ subroutine Precalc_trioLLs
           LL_trio(x,y,z,l, 3,4) = SUM( Tmp )
         
           ! U + U
-          LL_trio(x,y,z,l, 4,4) = OHWE(x,l)  
-      
+          LL_trio(x,y,z,l, 4,4) = OHWE(x,l)
+          
+          if (nRel == 4)  cycle  ! no FS
+          !~~~~~~~~~~~~~~~~~~~~
+          
+          ! PO + FS
+          do w=1,3
+            Tmp(w) = OKA2P(x,y,w) * AKA2P(z,y,w) * AHWE(w,l) / AHWE(z,l)
+          enddo
+          LL_trio(x,y,z,l, 1,5) = SUM( Tmp )
+          
+          ! GP + FS
+          do w=1,3
+            do v=1,3
+              Tmp2(v,w) = OKA2P(x,w,v) * AKA2P(z,w,v) * AKAP(w,y,l) * AHWE(v,l) / AHWE(z,l)
+            enddo
+          enddo
+          LL_trio(x,y,z,l, 2,5) = SUM( Tmp2 )
+          
+          ! GGP + FS
+          do w=1,3
+            do v=1,3
+              do u=1,3
+                Tmp3(u,v,w) = OKA2P(x,w,v) * AKA2P(z,w,v) * AKAP(w,u,l) * AKAP(u,y,l) &
+                 * AHWE(v,l) / AHWE(z,l)
+              enddo
+            enddo
+          enddo
+          LL_trio(x,y,z,l, 3,5) = SUM( Tmp3 )
+          
+          ! U + FS
+          do w=1,3
+            do v=1,3
+              Tmp2(v,w) = OKA2P(x,w,v) * AKA2P(z,w,v) * AHWE(w,l) * AHWE(v,l) / AHWE(z,l)
+            enddo
+          enddo
+          LL_trio(x,y,z,l, 4,5) = SUM( Tmp2 )
+          
+          ! FS + FS
+          do w=1,3
+            do v=1,3
+              Tmp2(v,w) = OKA2P(x,w,v) * AKA2P(z,w,v) * AKA2P(y,w,v) * AHWE(w,l) * AHWE(v,l) &
+               / (AHWE(z,l) * AHWE(y,l))
+            enddo
+          enddo
+          LL_trio(x,y,z,l, 5,5) = SUM( Tmp2 )
+
         enddo
       enddo
     enddo
     
-    ! PO + GP --> GP + PO etc.
-    do y=1,3
-      do z=1,3
-        LL_trio(:,y,z,l, 2,1) = LL_trio(:,z,y,l, 1,2)
-        LL_trio(:,y,z,l, 3,1) = LL_trio(:,z,y,l, 1,3)
-        LL_trio(:,y,z,l, 4,1) = LL_trio(:,z,y,l, 1,4)
-        LL_trio(:,y,z,l, 3,2) = LL_trio(:,z,y,l, 2,3)
-        LL_trio(:,y,z,l, 4,2) = LL_trio(:,z,y,l, 2,4)
-        LL_trio(:,y,z,l, 4,3) = LL_trio(:,z,y,l, 3,4)
+    ! PO + GP --> GP + PO etc.  
+    do w=1,nRel-1
+      do v=w+1,nRel
+        do z=1,3
+          do y=1,3
+            LL_trio(:,y,z,l, v,w) = LL_trio(:,z,y,l, w,v)
+          enddo
+        enddo
       enddo
     enddo
   
@@ -635,7 +691,7 @@ subroutine CalcLL(LL_array)
   use Global
   implicit none
 
-  double precision, intent(OUT) :: LL_array(4,4,nTrios)
+  double precision, intent(OUT) :: LL_array(nRel,nRel,nTrios)
   integer :: i, j, rel_d, rel_s, l, y,z
   double precision :: PrL(nSnp), PGeno(3, nSnp, 0:nInd), Tmp1(3), Tmp2(3,3)
 
@@ -663,10 +719,10 @@ subroutine CalcLL(LL_array)
   do j=1, nTrios
     if (.not. quiet .and. MOD(j,2000)==0)  print *, j
     if (Trios(1,j)==0)  cycle  ! offspring not genotyped
-    do rel_s = 1,4
+    do rel_s = 1,nRel
       if (Trios(3,j)==0 .and. rel_s/=4)  cycle  ! no sire in pedigree / not genotyped
       
-      do rel_d = 1,4
+      do rel_d = 1,nRel
         if (Trios(2,j)==0 .and. rel_d/=4)  cycle  ! no dam in pedigree / not genotyped
        
         
@@ -703,23 +759,22 @@ subroutine writeped(LL_array, OppHom, CalcProbs, FileName)
   use Global
   implicit none
 
-
-  double precision, intent(IN) :: LL_array(4,4, nTrios)
+  double precision, intent(IN) :: LL_array(nRel,nRel, nTrios)
   integer, intent(IN) :: OppHom(3, nTrios)
   logical, intent(IN) :: CalcProbs
   character(len=*), intent(IN) :: FileName
-  integer :: i, rel_d, rel_s
-  double precision :: out_array(4,4, nTrios)   
+  integer :: i, rel_d, rel_s, rel_order(5), x
+  double precision :: out_array(nRel,nRel, nTrios), tmp_array(nRel,nRel, nTrios)   
   character(len=200) :: HeaderFMT, DataFMT
-  character(len=2) :: relnames(4)
-  character(len=9) :: LLR_header(4,4)
+  character(len=2) :: relnames(nRel)
+  character(len=10) :: data_header(nRel,nRel)
 
 
   out_array = Missing
   do i=1,nTrios
-    do rel_s = 1,4
+    do rel_s = 1,nRel
       if (Trios(3,i)==0 .and. rel_s/=4)  cycle 
-      do rel_d = 1,4
+      do rel_d = 1,nRel
         if (Trios(2,i)==0 .and. rel_d/=4)  cycle
         if (CalcProbs) then
           ! transform all LL's to probabilities, summing to unity on each row
@@ -731,18 +786,32 @@ subroutine writeped(LL_array, OppHom, CalcProbs, FileName)
       enddo
     enddo
   enddo
+  
+  ! swap column order if nRel=5: PO/GP/HA/UU/FS --> PO/FS/GP/HA/UU
+  if (nRel==5) then
+    rel_order = (/1,5,2,3,4/)
+    do x=1,5
+      tmp_array(x,:,:) = out_array(rel_order(x),:,:)
+    enddo
+    do x=1,5
+      out_array(:,x,:) = tmp_array(:,rel_order(x),:)
+    enddo
+  endif
 
-
-  write(HeaderFMT, '( "(3(a", I0, ", 4X), 3a11, 16a10)" )')  ID_len
+  write(HeaderFMT, '( "(3(a", I0, ", 4X), 3a11, 100a12)" )')  ID_len
   if (CalcProbs) then
-    write(DataFMT, '( "(3(a", I0, ", 4X), 3i11, 16f10.4)" )')  ID_len  ! round to 4 decimals
+    write(DataFMT, '( "(3(a", I0, ", 4X), 3i11, 100f12.4)" )')  ID_len  ! round to 4 decimals
   else
-    write(DataFMT, '( "(3(a", I0, ", 4X), 3i11, 16f10.2)" )')  ID_len
+    write(DataFMT, '( "(3(a", I0, ", 4X), 3i11, 100f12.2)" )')  ID_len  
   endif
   
-  relnames = (/'PO','GP','HA','UU'/)
-  do rel_s = 1,4
-    do rel_d = 1,4
+  if (nRel==4) then
+    relnames = (/'PO','GP','HA','UU'/)
+  else
+    relnames = (/'PO','FS','GP','HA','UU'/)
+  endif
+  do rel_s = 1,nRel
+    do rel_d = 1,nRel
       if (CalcProbs) then
         data_header(rel_d, rel_s) = 'prob_'//relnames(rel_d)//'_'//relnames(rel_s)
       else
@@ -752,14 +821,12 @@ subroutine writeped(LL_array, OppHom, CalcProbs, FileName)
   enddo
 
   open (unit=201,file=trim(FileName), status="unknown") 
-    write (201, HeaderFMT)  Ped_header, 'OH_'//trim(Ped_header(2)), 'OH_'//trim(Ped_header(3)), 'ME_pair', &
-    data_header(:,1), data_header(:,2), data_header(:,3), data_header(:,4)
+    write (201, HeaderFMT)  Ped_header, 'OH_'//trim(Ped_header(2)), 'OH_'//trim(Ped_header(3)), 'ME_pair', & 
+     RESHAPE(data_header, (/nRel*nRel/))
     do i=1,nTrios
-      write (201,DataFMT) TrioNames(:,i), OppHom(:,i), &
-       out_array(:,1,i), out_array(:,2,i), out_array(:,3,i), out_array(:,4,i)
+      write (201,DataFMT) TrioNames(:,i), OppHom(:,i), RESHAPE(out_array(:,:,i), (/nRel*nRel/))
     enddo     
   close (201)
-
 
 end subroutine writeped
 

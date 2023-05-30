@@ -4,13 +4,14 @@
 This Fortran program takes a pedigree file and genotype data, and calculates for each offspring - dam - sire trio the probability that either or both parents are
     
   - PO = parent - offspring,
+  - FS = full siblings (optional)
   - GP = grandparent or full avuncular,
   - HA = half avuncular or other 3rd degree relationship,
   - UU = unrelated;
   
-returning all 4x4=16 probabilities for each trio. 
+returning all 5x5=25 probabilities for each trio. 
 
-In fact, the pedigree file may contain any arbitrary list of trios, such as offspring - sire - maternal grandsire. Each individual may occur multiple times in the offspring column, e.g. with different candidate parents. 
+In fact, the 'pedigree' file may contain any arbitrary list of trios, such as offspring - sire - maternal grandsire. Each individual may occur multiple times in the offspring column, e.g. with different candidate parents. 
 
 Pairs can be included too, as simply trios where one 'parent' is 'NA'; probabilities are only calculated for this parent being unrelated (UU). Non-genotyped parents are treated the same as missing parents. 
 
@@ -19,10 +20,20 @@ Pairs can be included too, as simply trios where one 'parent' is 'NA'; probabili
 ## Assumptions
 
 - Founders (individuals with no parents in the pedigree) are all unrelated;
-- Individuals can only be related as PO, GP/FA(/HS), HA, or UU. Full siblings are not yet implemented, inbred and double relationships are ignored;
-- One 'parent' is related via the maternal side, and the other via the paternal side; the two 'parents' are unrelated;
-- All SNPs are independent, have the same (average) genotyping error rate, and genotype frequencies are in Hardy-Weinberg equilibrium. 
+                                                                                                                                                   
+- One 'parent' is related via the maternal side, and the other via the paternal side; the two 'parents' are unrelated (except when FS);
+- Individuals can only be related as PO, FS, GP/FA/HS, HA, or UU. Inbred and double relationships are ignored;
+- All SNPs are independent, have the same (average) genotyping error rate, and genotype frequencies are in Hardy-Weinberg equilibrium;
+- None of the relationships are impossible based on age difference.
 
+
+## Warnings
+
+- Under these simplifying assumptions, the likelihoods for the three types of second degree relatives (GP/FA/HS) are identical, as are the likelihoods for all types of third degree relatives (HA). 
+
+- Inbred parent-parent-offspring trios, where the two parents are themselves parent and offspring, violate the second assumption and `prob_PO_PO` in the output will be (much) less than one for correct pairs. Use sequoia to identify and/or check such pairs.
+
+- There is no check whether two samples in a trio may come from the same individual; please use the sequoia R package with `Module=dup` or non-R sequoia with `--dup` first if duplicates may be included. 
 
 
 ## Input
@@ -109,14 +120,15 @@ The non-genetic probability of the relationship $P(R)$ includes in `sequoia` the
 
 ## Output from Fortran part
 
-The output consists of the the trios in the pedigree file, with 19 added columns:
+The output consists of the the trios in the pedigree file, with 19 or 24 added columns:
 
  - OH_\<parent1>, OH_\<parent2>: the count of opposing homozygous SNPs between the focal (offspring) individual and <parent1>, and between the focal individual and \<parent2>. \<parent1> and \<parent2> are the column names of the 2nd and 3rd column in the input file. Missing value = -9
  - ME_pair: number of Mendelian Errors between the focal individual and the parent pair. Missing value = -9
- - prob_PO_PO : the probability that both the dam and the sire have a Parent-Offspring relationship with the focal individual. Missing value = 9999.0000
+ - prob_PO_PO : the probability that both the dam and the sire have a Parent-Offspring relationship with the focal individual. Missing value = 999.0000
 - prob_.._.. : as for prob_PO_PO, where the first abbreviation denotes \<parent1> and the second \<parent2>, and 
 
     - PO = parent - offspring
+    - FS = full siblings (if not `--noFS`)      
     - GP = grandparent or full avuncular
     - HA = half avuncular or other 3rd degree relationship
     - UU = unrelated.
@@ -124,6 +136,15 @@ The output consists of the the trios in the pedigree file, with 19 added columns
 
 With option `--LLR`  log10-likelihoods (LL) are returned instead of probabilities, scaled for each trio by the LL that both parents are Unrelated, i.e. results are not scaled by $P(R)$. 
 
+
+### Read output into R
+
+To deal with the special missing values code, use the `na.strings` option of `read.table()`:
+
+```{r, eval=FALSE}
+PedOUT <- read.table('Pedigree_OUT.txt', header=TRUE,
+                     na.strings=c('NA', '-9', '999.0000', 'NaN'))
+```
 
 
 ## Disclaimer
