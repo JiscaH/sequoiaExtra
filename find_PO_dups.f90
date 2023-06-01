@@ -2,6 +2,8 @@
 ! While sequoia may run out of memory space for very large datasets,
 ! this minimalistic program is much less likely too. 
 ! 
+! by Jisca Huisman, jisca.huisman@gmail.com ,  May 2023
+!
 ! Input:
 ! - genotype file
 ! Command line arguments:
