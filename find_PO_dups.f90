@@ -117,7 +117,7 @@ program main
   ! defaults  ~~~~
   GenoFileName = 'Geno.txt'
   OnlyListFileName = 'NoFile'
-  OutFileName = 'Pairs_maybe_PO.txt'
+  OutFileName = 'Pairs_maybe_PO'
   maxOH = 0
   maxDUP = 0
   DoPO = .FALSE.
