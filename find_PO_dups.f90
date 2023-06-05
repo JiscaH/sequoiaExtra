@@ -2,8 +2,6 @@
 ! While sequoia may run out of memory space for very large datasets,
 ! this minimalistic program is much less likely too. 
 ! 
-! by Jisca Huisman, jisca.huisman@gmail.com ,  May 2023
-!
 ! Input:
 ! - genotype file
 ! Command line arguments:
@@ -117,7 +115,7 @@ program main
   ! defaults  ~~~~
   GenoFileName = 'Geno.txt'
   OnlyListFileName = 'NoFile'
-  OutFileName = 'Pairs_maybe_PO'
+  OutFileName = 'Pairs_maybe_PO.txt'
   maxOH = 0
   maxDUP = 0
   DoPO = .FALSE.
@@ -142,18 +140,18 @@ program main
           i = i+1
           call get_command_argument(i, GenoFileName)
          
-        case('--po')
+        case('--po', '--PO')
           DoPO = .TRUE.
 
-        case('--dup')
+        case('--dup', '--DUP')
           DoDup = .TRUE.
           
-        case ('--max_dup')
+        case ('--max_dup', '--maxDUP')
           i = i+1
           call get_command_argument(i, argOption)
           read(argOption, *)  maxDUP
           
-        case ('--max_oh')
+        case ('--max_oh', '--maxOH')
           i = i+1
           call get_command_argument(i, argOption)
           read(argOption, *)  maxOH        
