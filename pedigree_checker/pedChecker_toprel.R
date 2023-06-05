@@ -35,10 +35,15 @@ pedChecker_topRel <- function(FileName, Threshold=0.5)
                        .fun = function(V) matrix(V, length(RelNames), length(RelNames)))
   dimnames(probA) <- list(1:nrow(trio_probs), rel_id2 = RelNames, rel_id2 = RelNames)
   
+  
   get_toprel <- function(M, d) {
     probs <- apply(M,d,sum)
-    data.frame(TopRel = names(which.max(probs)),
+    if (any(!is.na(probs))) {  # either all NA or none NA
+      data.frame(TopRel = names(which.max(probs)),
                TopRel_prob = max(probs))
+    } else {
+      data.frame(TopRel = 'ZZ', TopRel_prob = NA)
+    }
   }
   
   toprel <- list(par1 = plyr::adply(probA, 1, get_toprel, 1), 
@@ -55,11 +60,12 @@ pedChecker_topRel <- function(FileName, Threshold=0.5)
   # TODO? GP -> '2nd' etc, but than valid name not starting with number
   
   # turn into factor (fixes table order)
-  if (any(c(toprel[[1]]$TopRel, toprel[[2]]$TopRel) == 'XX')) {
-    for (x in 1:2) {
-      toprel[[x]]$TopRel <- factor(toprel[[x]]$TopRel, levels = c(RelNames, 'XX'))
-    }
+  RelNames <- union(RelNames,
+                    unique(c(toprel[[1]]$TopRel, toprel[[2]]$TopRel)))  # add XX and/or ZZ
+  for (x in 1:2) {
+    toprel[[x]]$TopRel <- factor(toprel[[x]]$TopRel, levels = RelNames)
   }
+  
   
   # rename columns
   for (x in 1:2) {

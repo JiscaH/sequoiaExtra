@@ -47,14 +47,6 @@ pedChecker_compare <- function(FileName, Pedigree, Threshold=0.5)
 
   # Pedigree
   RelM <- sequoia::GetRelM(Pedigree, GenBack=2, patmat=FALSE, Return='Matrix')
-  # combine GP+GO, MP+O, etc.
-  RelRename <- c('MP' = 'PO',
-                 'O' = 'PO',
-                 'GO' = 'GP',
-                 'FN' = 'FA',
-                 'HN' = 'HA')
-  tmp <- ifelse(RelM %in% names(RelRename), RelRename[RelM], RelM)
-  RelM <- matrix(tmp, nrow(RelM), dimnames = dimnames(RelM))
   
   # Combine  
   par_cn <- colnames(topRels)[2:3]
@@ -63,7 +55,8 @@ pedChecker_compare <- function(FileName, Pedigree, Threshold=0.5)
   for (x in 1:2) {
     topRels[,pedrel_cn[x]] <- RelM[ cbind(topRels[,1], topRels[,x+1]) ]
     topRels[,pedrel_cn[x]] <- factor(topRels[,pedrel_cn[x]], 
-                                        levels = c("PO", "FS", "HS", 'GP', 'FA', 'HA', 'FC1', 'U'))
+                                        levels = c("MP",'O', "FS", "HS", 'GP','GO',
+                                        'FA','FN', 'HA','HN', 'FC1', 'U'))
   }
  
   out <- list(table(topRels[,pedrel_cn[1]], topRels[,toprel_cn[1]]),
