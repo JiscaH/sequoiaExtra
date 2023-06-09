@@ -239,11 +239,12 @@ program pedigree_checker
                         '                       each animal_id may occur multiple times.',&
                         '                       Default: Pedigree.txt'
         print '(a)',    '  --pedigreeIN <filename>    same as --trios'             
-        print '(a)',    '  --geno <filename>   input file with genotype data. Default: Geno.txt'
-        print '(a)',    '  --out <filename>    output file with pedigree + OH counts + Likelihoods;',&
-                        '                       default: Pedigree_OUT.txt'
+        print '(a)',    '  --geno <filename>   input file with genotype data. Default: Geno.txt'       
         print '(a)',    '  --err               presumed genotyping error rate; default: 0.005'
         print '(a)',    '  --noLLR             do not calculate LLR, OH count only'
+        print '(a)',    '  --noFS              assume pairs cannot be full siblings'
+        print '(a)',    '  --out <filename>    output file with pedigree + OH counts + Likelihoods;',&
+                        '                       default: Pedigree_OUT.txt'
         print '(a)',    '  --quiet             suppress all messages'
     end subroutine print_help 
 
@@ -772,13 +773,15 @@ subroutine writeped(LL_array, OppHom, CalcProbs, FileName)
 
   out_array = Missing
   do i=1,nTrios
+    if (trios(1,i)==0)  cycle
     do rel_s = 1,nRel
       if (Trios(3,i)==0 .and. rel_s/=4)  cycle 
       do rel_d = 1,nRel
         if (Trios(2,i)==0 .and. rel_d/=4)  cycle
         if (CalcProbs) then
-          ! transform all LL's to probabilities, summing to unity on each row
-          out_array(rel_d, rel_s, i) = 10**LL_array(rel_d, rel_s, i) / SUM(10**LL_array(:, :, i))
+!         if (Trios(,i)==0 .and. Trios(3,i)==0)  cycle
+          out_array(rel_d, rel_s, i) = 10**LL_array(rel_d, rel_s, i) / &
+            SUM(10**LL_array(:, :, i), MASK=LL_array(:, :, i)/=Missing)
         else
           ! scale all LLs by LL(U/U)
           out_array(rel_d, rel_s, i) = LL_array(rel_d, rel_s, i) - LL_array(4, 4, i)

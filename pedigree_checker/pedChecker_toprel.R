@@ -34,15 +34,15 @@ pedChecker_topRel <- function(FileName, Threshold=0.5)
   probA <- plyr::aaply(as.matrix(trio_probs[,prob_colnames]), .margins=1,
                        .fun = function(V) matrix(V, length(RelNames), length(RelNames)))
   dimnames(probA) <- list(1:nrow(trio_probs), rel_id2 = RelNames, rel_id2 = RelNames)
-  
-  
+    
   get_toprel <- function(M, d) {
-    probs <- apply(M,d,sum)
-    if (any(!is.na(probs))) {  # either all NA or none NA
-      data.frame(TopRel = names(which.max(probs)),
-               TopRel_prob = max(probs))
-    } else {
+    probs <- apply(M, d, 
+                   function(v) ifelse(all(is.na(v)), NA, sum(v, na.rm=TRUE)))
+    if (any(is.na(probs))) {  # parent not genotyped
       data.frame(TopRel = 'ZZ', TopRel_prob = NA)
+    } else {  
+      data.frame(TopRel = names(which.max(probs)),
+               TopRel_prob = max(probs, na.rm=TRUE))
     }
   }
   
