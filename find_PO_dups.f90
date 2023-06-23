@@ -115,7 +115,7 @@ program main
   ! defaults  ~~~~
   GenoFileName = 'Geno.txt'
   OnlyListFileName = 'NoFile'
-  OutFileName = 'Pairs_maybe_PO.txt'
+  OutFileName = 'Pairs_maybe'
   maxOH = 0
   maxDUP = 0
   DoPO = .FALSE.
@@ -260,14 +260,18 @@ subroutine find_dups(FileName_part)
   
   character(len=nchar_filename), intent(IN) :: FileName_part 
   character(len=nchar_filename+7) :: FileName
-  integer :: i,j, Lboth, Diff_ij, nPairs
+  integer :: i,j, Lboth, Diff_ij, nPairs, ID_len
+  character(len=200) :: HeaderFMT, DataFMT
   
   FileName = trim(FileName_part)//'_DUP.txt'
   
+  ID_len = 20
+  write(HeaderFMT, '( "(2(a8, 4X, a", I0, ", 4X), 2a10)" )')  ID_len
+  write(DataFMT,   '( "(2(i8, 4X, a", I0, ", 4X), 2i10)" )')  ID_len  
+  
   nPairs = 0
   open(unit=201, file=trim(FileName), status='unknown')
-    write(201, '(2a20, 2a10)') 'ID1', 'ID2', 'nDiff', 'SnpdBoth'
-  
+    write (201, HeaderFMT) 'Row1', 'ID1', 'Row2', 'ID2', 'nDiffer', 'SnpdBoth'
     do i=1, nInd-1
       if (.not. quiet .and. Modulo(i, 5000)==0)  print *, i
       do j=i+1, nInd
@@ -278,7 +282,7 @@ subroutine find_dups(FileName_part)
 !        if (dble(Diff_ij)/Lboth  > 2.0*dble(MaxDUP)/nSnp)  cycle
         
         ! if arrived here, i+j are potential duplicate samples from same individual
-        write(201, '(2a20, 2i7)') Id(i), Id(j), Diff_ij, Lboth
+        write(201, DataFMT) i, Id(i), j, Id(j), Diff_ij, Lboth
         nPairs = nPairs +1
           
       enddo
@@ -299,13 +303,18 @@ subroutine find_PO(FileName_part)
   
   character(len=nchar_filename), intent(IN) :: FileName_part
   character(len=nchar_filename+7) :: FileName  
-  integer :: i,j, Lboth, OH_ij, nPairs
+  integer :: i,j, Lboth, OH_ij, nPairs, ID_len
+  character(len=200) :: HeaderFMT, DataFMT
   
   FileName = trim(FileName_part)//'_PO.txt'
   
+  ID_len = 20
+  write(HeaderFMT, '( "(2(a8, 4X, a", I0, ", 4X), 2a10)" )')  ID_len
+  write(DataFMT,   '( "(2(i8, 4X, a", I0, ", 4X), 2i10)" )')  ID_len
+  
   nPairs = 0
   open(unit=201, file=trim(FileName), status='unknown')
-    write(201, '(2a20, 2a10)') 'ID1', 'ID2', 'OH', 'SnpdBoth'
+    write(201, HeaderFMT) 'Row1', 'ID1', 'Row2', 'ID2', 'OH', 'SnpdBoth'
   
     do i=1, nInd-1
       if (.not. quiet .and. Modulo(i, 5000)==0)  print *, i
@@ -318,7 +327,7 @@ subroutine find_PO(FileName_part)
         if (dble(OH_ij)/Lboth  > 2.0*dble(MaxOH)/nSnp)  cycle
         
         ! if arrived here, i+j are potential parent-offspring pair
-        write(201, '(2a20, 2i7)') Id(i), Id(j), OH_ij, Lboth
+        write(201, DataFMT) i, Id(i), j, Id(j), OH_ij, Lboth
         nPairs = nPairs +1
           
       enddo
