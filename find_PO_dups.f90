@@ -146,7 +146,7 @@ program main
         case('--dup', '--DUP')
           DoDup = .TRUE.
           
-        case ('--max_dup', '--maxDUP')
+        case ('--max_diff', '--max_dup', '--maxDUP')
           i = i+1
           call get_command_argument(i, argOption)
           read(argOption, *)  maxDUP
@@ -242,7 +242,8 @@ program main
         print '(a)',    '  --po                search for potential parent-offspring pairs' 
         print '(a)',    '  --max_oh <n>        maximum OH count for potential PO pairs. Default: 1', &
                         '                        see ?sequoia::MaxMismatch in R' 
-        print '(a)',    '  --max_dup <n>       maximum number of differences between duplicate samples'   
+        print '(a)',    '  --max_diff <n>      maximum number of differences between duplicate samples'    
+        print '(a)',    '  --max_dup <n>       maximum number of differences between duplicate samples'
         print '(a)',    '  --only <filename>   only calculate OH when one or both are in this subset'
         print '(a)',    '  --out <filename>    output file name. Default: Pairs_maybe_PO.txt' 
 !        print '(a)',    '  --quiet             suppress all messages'
@@ -260,7 +261,7 @@ subroutine find_dups(FileName_part)
   
   character(len=nchar_filename), intent(IN) :: FileName_part 
   character(len=nchar_filename+7) :: FileName
-  integer :: i,j, Lboth, Diff_ij, nPairs, ID_len
+  integer :: i,j, Lboth, Diff_ij, nPairs, ID_len, l
   character(len=200) :: HeaderFMT, DataFMT
   
   FileName = trim(FileName_part)//'_DUP.txt'
@@ -273,24 +274,30 @@ subroutine find_dups(FileName_part)
   open(unit=201, file=trim(FileName), status='unknown')
     write (201, HeaderFMT) 'Row1', 'ID1', 'Row2', 'ID2', 'nDiffer', 'SnpdBoth'
     do i=1, nInd-1
-      if (.not. quiet .and. Modulo(i, 5000)==0)  print *, i
+      if (.not. quiet .and. mod(i, 2000)==0)  print *, i
       do j=i+1, nInd
         if (skip(i) .and. skip(j))  cycle
-        Lboth = COUNT(Genos(:,i)/=-1 .and. Genos(:,j)/=-1) 
-        Diff_ij = COUNT(Genos(:,i) /= Genos(:,j) .and. Genos(:,i)/=-1 .and. Genos(:,j)/=-1)
-        if (Diff_ij > maxDUP)  cycle
-!        if (dble(Diff_ij)/Lboth  > 2.0*dble(MaxDUP)/nSnp)  cycle
-        
+        Lboth = 0
+        Diff_ij = 0
+        do l=1, nSnp
+          if (Genos(l,i)==-1 .or. Genos(l,j)==-1)  cycle
+          Lboth = Lboth +1
+          if (Genos(l,i) /= Genos(l,j)) then
+            Diff_ij = Diff_ij +1
+            if (Diff_ij > maxDup)  exit
+          endif
+        enddo  
+        if (Diff_ij > maxDup)  cycle
+        if (dble(Diff_ij)/Lboth  > 2.0*dble(MaxDUP)/nSnp)  cycle    
         ! if arrived here, i+j are potential duplicate samples from same individual
         write(201, DataFMT) i, Id(i), j, Id(j), Diff_ij, Lboth
-        nPairs = nPairs +1
-          
+        nPairs = nPairs +1         
       enddo
     enddo
   
   close(201)
   
-  write(*,'("Found ", i7, " duplicate pairs using maxDUP=", i4)') nPairs, maxDUP 
+  write(*,'("Found ", i8, " duplicate pairs using maxDUP=", i4)') nPairs, maxDUP 
 
 end subroutine find_dups
 
@@ -303,7 +310,7 @@ subroutine find_PO(FileName_part)
   
   character(len=nchar_filename), intent(IN) :: FileName_part
   character(len=nchar_filename+7) :: FileName  
-  integer :: i,j, Lboth, OH_ij, nPairs, ID_len
+  integer :: i,j, Lboth, OH_ij, nPairs, ID_len, l
   character(len=200) :: HeaderFMT, DataFMT
   
   FileName = trim(FileName_part)//'_PO.txt'
@@ -317,15 +324,23 @@ subroutine find_PO(FileName_part)
     write(201, HeaderFMT) 'Row1', 'ID1', 'Row2', 'ID2', 'OH', 'SnpdBoth'
   
     do i=1, nInd-1
-      if (.not. quiet .and. Modulo(i, 5000)==0)  print *, i
+      if (.not. quiet .and. Mod(i, 5000)==0)  print *, i
       do j=i+1, nInd
         if (skip(i) .and. skip(j))  cycle
-        Lboth = COUNT(Genos(:,i)/=-1 .and. Genos(:,j)/=-1) 
-        if (Lboth < nSnp/3.0)   cycle   ! >2/3th of markers missing for one or both
-        call CalcOH(i,j, OH_ij)
+        Lboth = 0
+        OH_ij = 0
+        do l=1,nSnp
+          if (Genos(l,i)==-1 .or. Genos(l,j)==-1)  cycle
+          Lboth = Lboth +1
+          if ((Genos(l,i)==0 .and.Genos(l,j)==2) .or. &
+           (Genos(l,i)==2 .and. Genos(l,j)==0)) then
+            OH_ij = OH_ij +1
+            if (OH_ij > maxOH) exit
+          endif  
+        enddo
         if (OH_ij > maxOH)  cycle
-        if (dble(OH_ij)/Lboth  > 2.0*dble(MaxOH)/nSnp)  cycle
-        
+        if (Lboth < nSnp/3.0)   cycle   ! >2/3th of markers missing for one or both 
+        if (dble(OH_ij)/Lboth  > 2.0*dble(MaxOH)/nSnp)  cycle        
         ! if arrived here, i+j are potential parent-offspring pair
         write(201, DataFMT) i, Id(i), j, Id(j), OH_ij, Lboth
         nPairs = nPairs +1
@@ -335,30 +350,9 @@ subroutine find_PO(FileName_part)
   
   close(201)
   
-  write(*,'("Found ", i7, " parent-offspring pairs using maxOH=", i4)') nPairs, maxOH 
+  write(*,'("Found ", i8, " parent-offspring pairs using maxOH=", i4)') nPairs, maxOH 
 
 end subroutine find_PO
-
-!===============================================================================
-
-subroutine CalcOH(A,B,OH)
-  use Global_variables
-  implicit none
-
-  integer, intent(IN) :: A, B
-  integer, intent(OUT) :: OH
-  integer :: l
-
-  OH = 0
-  do l=1,nSnp
-    if ((Genos(l,A)==0 .and.Genos(l,B)==2) .or. &
-     (Genos(l,A)==2 .and. Genos(l,B)==0)) then
-      OH = OH+1
-      if (OH > maxOH) exit
-    endif                       
-  enddo
-
-end subroutine CalcOH
 
 !===============================================================================
 !===============================================================================
