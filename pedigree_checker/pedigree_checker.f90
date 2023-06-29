@@ -3,7 +3,8 @@
 ! genotype: 1 row per individual, 1st column is ID, then 1 column per SNP; 0/1/2 copies of minor allele, -9=missing
 ! other parameters: runtime options (a.o. genotyping error)
 
-! It's an extremely minimalistic version of sequoia, which should hopefully be useful for finding pedigree errors in both the nucleus herd as in the multiplication herds, as well as 
+! This is an extremely minimalistic version of sequoia, 
+! useful for finding errors even in very large pedigrees
 
 ! compile: gfortran -std=f95 -fall-intrinsics -O3 pedigree_checker.f90 -o PedChecker
 ! gfortran -std=f95 -fall-intrinsics -Wall -pedantic -fbounds-check -g -Og pedigree_checker.f90 -o PedChecker
