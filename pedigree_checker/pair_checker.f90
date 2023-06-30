@@ -375,6 +375,7 @@ subroutine CountDifs
   nDiff = -9
   nOH = -9
   do i=1,nPairs
+    if (.not. quiet .and. i>10000 .and. MOD(i,5000)==0)  print *, i
     if (Pairs(1,i)==0 .or. Pairs(2,i)==0) then
       nBoth(i) = 0
       cycle
@@ -626,7 +627,8 @@ subroutine writePairs(LL_array, CalcProbs, FileName)
     if (pairs(1,i)==0 .or. Pairs(2,i)==0)  cycle
     if (CalcProbs) then
       ! scale to prevent problems with rounding to 0
-      WHERE (LL_array(:,i)/=Missing)  tmp_array(:,i) = LL_array(:,i) - maxval(LL_array(:,i))
+      WHERE (LL_array(:,i)/=Missing)  tmp_array(:,i) = LL_array(:,i) - &
+        maxval(LL_array(:,i), MASK=LL_array(:,i)/=Missing)
       do r=1, nRel
         if (LL_array(r,i) == Missing)  cycle          
         out_array(r,i) = 10**tmp_array(r,i) / SUM(10**tmp_array(:,i), MASK=LL_array(:,i)/=Missing)
@@ -647,7 +649,7 @@ subroutine writePairs(LL_array, CalcProbs, FileName)
     write(DataFMT, '( "(2(a", I0, ", 4X), 3i11, 6f12.2)" )')  ID_len  
   endif
   
-  relnames = (/' S', 'PO', 'FS', 'GP','HA','UU'/)
+  relnames = (/'S ', 'PO', 'FS', 'GP','HA','UU'/)
   do r = 1,nRel
     if (CalcProbs) then
       data_header(r) = 'prob_'//relnames(r)
