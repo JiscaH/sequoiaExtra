@@ -242,7 +242,7 @@ program pedigree_checker
         print '(a)',    '  --pedigreeIN <filename>    same as --trios'             
         print '(a)',    '  --geno <filename>   input file with genotype data. Default: Geno.txt'       
         print '(a)',    '  --err               presumed genotyping error rate; default: 0.005'
-        print '(a)',    '  --noLLR             do not calculate LLR, OH count only'
+        print '(a)',    '  --LLR               do not transform LLRs to probabilities'
         print '(a)',    '  --noFS              assume pairs cannot be full siblings'
         print '(a)',    '  --out <filename>    output file with pedigree + OH counts + Likelihoods;',&
                         '                       default: Pedigree_OUT.txt'
@@ -766,32 +766,33 @@ subroutine writeped(LL_array, OppHom, CalcProbs, FileName)
   logical, intent(IN) :: CalcProbs
   character(len=*), intent(IN) :: FileName
   integer :: i, rel_d, rel_s, rel_order(5), x
-  double precision :: out_array(nRel,nRel, nTrios), tmp_array(nRel,nRel, nTrios)   
+  double precision :: out_array(nRel,nRel, nTrios), tmp_array(nRel,nRel, nTrios)
   character(len=200) :: HeaderFMT, DataFMT
   character(len=2) :: relnames(nRel)
   character(len=10) :: data_header(nRel,nRel)
 
 
   out_array = Missing
+  tmp_array = Missing
   do i=1,nTrios
     if (trios(1,i)==0)  cycle
-    do rel_s = 1,nRel
-      if (Trios(3,i)==0 .and. rel_s/=4)  cycle 
-      do rel_d = 1,nRel
-        if (Trios(2,i)==0 .and. rel_d/=4)  cycle
-        if (CalcProbs) then
-!         if (Trios(,i)==0 .and. Trios(3,i)==0)  cycle
-          out_array(rel_d, rel_s, i) = 10**LL_array(rel_d, rel_s, i) / &
-            SUM(10**LL_array(:, :, i), MASK=LL_array(:, :, i)/=Missing)
-        else
-          ! scale all LLs by LL(U/U)
-          out_array(rel_d, rel_s, i) = LL_array(rel_d, rel_s, i) - LL_array(4, 4, i)
-        endif
+    WHERE (LL_array(:,:,i)/=Missing)  tmp_array(:,:,i) = LL_array(:,:,i) - LL_array(4,4,i)
+    if (CalcProbs) then
+      do rel_s = 1,nRel
+        if (Trios(3,i)==0 .and. rel_s/=4)  cycle 
+        do rel_d = 1,nRel
+          if (Trios(2,i)==0 .and. rel_d/=4)  cycle                
+          out_array(rel_d, rel_s, i) = 10**tmp_array(rel_d, rel_s,i) / &
+              SUM(10**tmp_array(:,:,i), MASK=LL_array(:, :, i)/=Missing)
+        enddo
       enddo
-    enddo
+    else
+      out_array(:,:,i) = tmp_array(:,:,i)
+    endif
   enddo
   
   ! swap column order if nRel=5: PO/GP/HA/UU/FS --> PO/FS/GP/HA/UU
+  tmp_array = Missing
   if (nRel==5) then
     rel_order = (/1,5,2,3,4/)
     do x=1,5
