@@ -111,7 +111,7 @@ program pedigree_checker
   integer :: x, i, nArg
   double precision :: Er
   character(len=32) :: arg, argOption
-  character(len=nchar_filename) :: PedFileName, GenoFileName, OutFileName
+  character(len=nchar_filename) :: PedFileName, GenoFileName, OutFileName, AF_FileName
   logical :: CalcProbs, FileOK
   ! output
   integer, allocatable, dimension(:,:) :: OppHom
@@ -122,6 +122,7 @@ program pedigree_checker
   PedFileName = 'Pedigree.txt'
   GenoFileName = 'Geno.txt'
   OutFileName = 'Pedigree_OUT.txt'
+  AF_FileName = 'NoFile'
   Er = 0.005  
   CalcProbs = .TRUE.   ! transform log10-likelihoods into probabilities
   nRel = 5  ! number of relationships: PO, GP/FA/HS, HA/3rd, UU, (FS)
@@ -171,6 +172,10 @@ program pedigree_checker
         case ('--LLR')
           CalcProbs = .FALSE.
           
+        case ('--af', '--maf', '--freq')
+          i = i+1
+          call get_command_argument(i, AF_FileName)         
+          
         case ('--quiet')
           quiet = .TRUE.
           
@@ -204,7 +209,7 @@ program pedigree_checker
   if (.not. quiet)  print *, "Reading genotype data in "//trim(GenoFileName)//" ... "
   call ReadGeno(GenoFileName)
   
-  call PrecalcProbs(Er) 
+  call PrecalcProbs(Er, AF_FileName) 
   
   if (.not. quiet)  print *, "Reading trios in "//trim(PedFileName)//" ... "
   call ReadPedFile(PedFileName)
@@ -246,6 +251,9 @@ program pedigree_checker
         print '(a)',    '  --noFS              assume pairs cannot be full siblings'
         print '(a)',    '  --out <filename>    output file with pedigree + OH counts + Likelihoods;',&
                         '                       default: Pedigree_OUT.txt'
+        print '(a)',    '  --af <filename>     optional input file with allele frequencies. Either',&
+                        '                        1 column and no header, or multiple columns with column',&
+                        '                        MAF, AF, or Frequency. E.g. output from plink --freq.'                       
         print '(a)',    '  --quiet             suppress all messages'
     end subroutine print_help 
 
@@ -361,23 +369,18 @@ end subroutine ReadPedFile
 ! ##   General prep   ##
 ! ##############################################################################
 
-subroutine PrecalcProbs(Er)
+subroutine PrecalcProbs(Er, AF_FileName)
   use Global
   implicit none
 
   double precision, intent(IN) :: Er
+  character(len=*), intent(IN) :: AF_FileName
   integer :: h,i,j,k,l
   double precision ::  AF(nSnp), Tmp(3)
 
   ! allele frequencies
-  do l=1,nSnp
-    if (ANY(Genos(l,:)/=-1)) then
-      AF(l)=float(SUM(Genos(l,:), MASK=Genos(l,:)/=-1))/(COUNT(Genos(l,:)/=-1)*2)
-    else
-      AF(l) = 1D0
-    endif
-  enddo
-
+  call getAF(AF_FileName, AF)
+  
 
   !###################
   ! probabilities actual genotypes under HWE
@@ -458,6 +461,75 @@ subroutine PrecalcProbs(Er)
   enddo
 
 end subroutine PrecalcProbs
+
+!===============================================================================
+
+subroutine getAF(FileName, AF)
+  use Global 
+  implicit none
+  
+  character(len=*), intent(IN) :: FileName
+  double precision, intent(OUT) :: AF(nSnp)
+  integer :: l, nCol, nRow, AFcol, k, IOerr
+  character(len=50), allocatable :: header(:), tmpC(:)
+  double precision :: tmpD
+  
+  AF = 1D0
+  
+  if (FileName == 'NoFile') then
+  
+    do l=1,nSnp
+      if (ANY(Genos(l,:)/=-1)) then
+        AF(l)=float(SUM(Genos(l,:), MASK=Genos(l,:)/=-1))/(COUNT(Genos(l,:)/=-1)*2)
+      endif
+    enddo
+  
+  else
+    if (.not. quiet)  print *, "Reading allele frequencies in "//trim(FileName)//" ... "
+  
+    nCol = FileNumCol(trim(FileName))
+    nRow = FileNumRow(trim(FileName))
+    if ((nCol==1 .and. nRow /= nSnp) .or. (nCol>1 .and. nRow /= (nSnp+1))) then
+      print *, "MAF file "//trim(FileName)//" has different number of SNPs than genotype file!"
+      stop
+    endif
+    allocate(header(nCol))
+    header = 'NA'
+    AFcol = 0
+    
+    open(unit=103, file=trim(FileName), status="old")     
+      if (nCol == 1) then
+        AFcol = 1
+      else
+        read(103,*)  header
+        do k=1, nCol
+          if (header(k) == 'MAF' .or. header(k)=='AF' .or. header(k)=='Frequency') then
+            AFcol = k
+          endif
+        enddo
+      endif
+      if (AFcol > 1)  allocate(tmpC(AFcol -1))
+      
+      do l=1, nSnp
+        if (AFcol == 1) then
+          read(103, *,IOSTAT=IOerr)  tmpD
+        else
+          read(103, *,IOSTAT=IOerr)  tmpC, tmpD
+        endif
+        if (IOerr > 0) then
+          print *, "Wrong input in file "//trim(FileName)//" on line ", l
+          stop
+        else if (IOerr < 0) then  
+          exit  ! EOF
+        else
+          AF(l) = tmpD
+        end if
+      enddo
+    close(103)
+
+  endif
+
+end subroutine getAF
 
 ! ##############################################################################
 ! ##   Count OH   ##
