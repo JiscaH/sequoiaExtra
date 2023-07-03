@@ -263,6 +263,15 @@ subroutine find_dups(FileName_part)
   character(len=nchar_filename+7) :: FileName
   integer :: i,j, Lboth, Diff_ij, nPairs, ID_len, l
   character(len=200) :: HeaderFMT, DataFMT
+  integer :: IsBothScored(-1:2,-1:2), IsDifferent(-1:2,-1:2)
+  
+  IsBothScored = 1
+  IsBothScored(-1,:) = 0
+  IsBothScored(:,-1) = 0
+  IsDifferent = 0
+  IsDifferent(0, 1:2) = 1
+  IsDifferent(1, (/0,2/)) = 1
+  IsDifferent(2, 0:1) = 1
   
   FileName = trim(FileName_part)//'_DUP.txt'
   
@@ -274,18 +283,15 @@ subroutine find_dups(FileName_part)
   open(unit=201, file=trim(FileName), status='unknown')
     write (201, HeaderFMT) 'Row1', 'ID1', 'Row2', 'ID2', 'nDiffer', 'SnpdBoth'
     do i=1, nInd-1
-      if (.not. quiet .and. mod(i, 2000)==0)  print *, i
+      if (.not. quiet .and. mod(i, 2000)==0)  write(*, '(i8, " found: ", i8)')  i, nPairs
       do j=i+1, nInd
         if (skip(i) .and. skip(j))  cycle
         Lboth = 0
         Diff_ij = 0
         do l=1, nSnp
-          if (Genos(l,i)==-1 .or. Genos(l,j)==-1)  cycle
-          Lboth = Lboth +1
-          if (Genos(l,i) /= Genos(l,j)) then
-            Diff_ij = Diff_ij +1
-            if (Diff_ij > maxDup)  exit
-          endif
+          Lboth = Lboth + IsBothScored(Genos(l,i), Genos(l,j))
+          Diff_ij = Diff_ij + IsDifferent(Genos(l,i), Genos(l,j))
+          if (Diff_ij > maxDup)  exit
         enddo  
         if (Diff_ij > maxDup)  cycle
         if (dble(Diff_ij)/Lboth  > 2.0*dble(MaxDUP)/nSnp)  cycle    
@@ -297,7 +303,7 @@ subroutine find_dups(FileName_part)
   
   close(201)
   
-  write(*,'("Found ", i8, " duplicate pairs using maxDUP=", i4)') nPairs, maxDUP 
+  write(*,'("Found ", i8, " duplicate pairs using maxDUP =", i4)') nPairs, maxDUP 
 
 end subroutine find_dups
 
@@ -312,7 +318,16 @@ subroutine find_PO(FileName_part)
   character(len=nchar_filename+7) :: FileName  
   integer :: i,j, Lboth, OH_ij, nPairs, ID_len, l
   character(len=200) :: HeaderFMT, DataFMT
+  integer :: IsBothScored(-1:2,-1:2), IsOppHom(-1:2,-1:2)
   
+  IsBothScored = 1
+  IsBothScored(-1,:) = 0
+  IsBothScored(:,-1) = 0
+  IsOppHom = 0
+  IsOppHom(0, 2) = 1
+  IsOppHom(2, 0) = 1
+  
+   
   FileName = trim(FileName_part)//'_PO.txt'
   
   ID_len = 20
@@ -324,19 +339,15 @@ subroutine find_PO(FileName_part)
     write(201, HeaderFMT) 'Row1', 'ID1', 'Row2', 'ID2', 'OH', 'SnpdBoth'
   
     do i=1, nInd-1
-      if (.not. quiet .and. Mod(i, 5000)==0)  print *, i
+      if (.not. quiet .and. Mod(i, 2000)==0)  write(*, '(i8, " found: ", i8)')  i, nPairs
       do j=i+1, nInd
         if (skip(i) .and. skip(j))  cycle
         Lboth = 0
         OH_ij = 0
         do l=1,nSnp
-          if (Genos(l,i)==-1 .or. Genos(l,j)==-1)  cycle
-          Lboth = Lboth +1
-          if ((Genos(l,i)==0 .and.Genos(l,j)==2) .or. &
-           (Genos(l,i)==2 .and. Genos(l,j)==0)) then
-            OH_ij = OH_ij +1
-            if (OH_ij > maxOH) exit
-          endif  
+          Lboth = Lboth + IsBothScored(Genos(l,i), Genos(l,j))
+          OH_ij = OH_ij + IsOppHom(Genos(l,i), Genos(l,j))
+          if (OH_ij > maxOH) exit 
         enddo
         if (OH_ij > maxOH)  cycle
         if (Lboth < nSnp/3.0)   cycle   ! >2/3th of markers missing for one or both 
@@ -350,7 +361,7 @@ subroutine find_PO(FileName_part)
   
   close(201)
   
-  write(*,'("Found ", i8, " parent-offspring pairs using maxOH=", i4)') nPairs, maxOH 
+  write(*,'("Found ", i8, " parent-offspring pairs using maxOH =", i4)') nPairs, maxOH 
 
 end subroutine find_PO
 
