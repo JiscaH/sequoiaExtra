@@ -31,7 +31,7 @@ module Fun
     print '(a)',    '  --only       only consider pairs with one or both individuals listed'
     print '(a)',    '  --lower      export pairs with R value below this threshold'
     print '(a)',    '  --upper      export pairs with R value above this threshold'
-    print '(a)',    '  --verbose    print counter while running and message when done.'
+    print '(a)',    '  --quiet      hide counter while running and message when done.'
     print '(a)',    ''
   end subroutine print_help
     
@@ -101,7 +101,7 @@ program filter_grm
   infile = 'nofile'
   outfile = 'grm_filter_output.txt'
   OnlyListFileName = 'nofile'
-  quiet = .TRUE.
+  quiet = .FALSE.
   
   ! read command line arguments: --lower, --upper, --in, --out, --only
   nArg = command_argument_count()
@@ -138,8 +138,8 @@ program filter_grm
         i = i+1
         call get_command_argument(i, OnlyListFileName)
         
-      case ('--verbose')
-        quiet = .FALSE.
+      case ('--quiet')
+        quiet = .TRUE.
         
       case default
         print '(2a, /)', 'Unrecognised command-line option: ', arg
