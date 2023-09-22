@@ -25,13 +25,14 @@ module Fun
   ! option documentation
   subroutine print_help()
     print '(a, /)', 'command-line options:'
-    print '(a)',    '  --help       print usage information and exit'
-    print '(a)',    '  --in         input file with grm; extensions .grm.id and .grm.gz are added'
-    print '(a)',    '  --out        output file'
-    print '(a)',    '  --only       only consider pairs with one or both individuals listed'
-    print '(a)',    '  --lower      export pairs with R value below this threshold'
-    print '(a)',    '  --upper      export pairs with R value above this threshold'
-    print '(a)',    '  --quiet      hide counter while running and message when done.'
+    print '(a)',    '  --help        print usage information and exit'
+    print '(a)',    '  --in          input file with grm; extensions .grm.id and .grm.gz are added'
+    print '(a)',    '  --out         output file'
+    print '(a)',    '  --lower       export pairs with R value below this threshold'
+    print '(a)',    '  --upper       export pairs with R value above this threshold'
+    print '(a)',    '  --only        only consider pairs with one or both individuals listed'
+    print '(a)',    '  --only-among  only consider pairs with both individuals listed'
+    print '(a)',    '  --quiet       hide counter while running and message when done.'
     print '(a)',    ''
   end subroutine print_help
     
@@ -93,7 +94,7 @@ program filter_grm
   double precision :: r, lowr, upr
   character(len=32) :: arg, argOption
   character(len=nchar_filename) :: infile, outfile, OnlyListFileName
-  logical :: FileOK, quiet
+  logical :: FileOK, quiet, OnlyAmong
   
   ! set default values
   lowr = -HUGE(0D0)
@@ -102,6 +103,7 @@ program filter_grm
   outfile = 'grm_filter_output.txt'
   OnlyListFileName = 'nofile'
   quiet = .FALSE.
+  OnlyAmong = .FALSE.
   
   ! read command line arguments: --lower, --upper, --in, --out, --only
   nArg = command_argument_count()
@@ -134,9 +136,14 @@ program filter_grm
         call get_command_argument(i, argOption)
         read(argOption, *)  upr
         
-      case ('--only')
+      case ('--only ')
         i = i+1
         call get_command_argument(i, OnlyListFileName)
+        
+     case ('--only-among')
+        i = i+1
+        call get_command_argument(i, OnlyListFileName)
+        OnlyAmong = .TRUE.
         
       case ('--quiet')
         quiet = .TRUE.
@@ -234,6 +241,9 @@ program filter_grm
       read(11, *, iostat=ios) i,j,z,r  
       if (ios/=0) exit   ! stop if end of file / incorrect entry
       if (skip(i) .and. skip(j))  cycle
+      if (OnlyAmong) then
+        if (skip(i) .or. skip(j))  cycle
+      endif
       ! write to outfile entries that meet criteria
      if (r < lowr .or. r > upr) then
        n = n+1
