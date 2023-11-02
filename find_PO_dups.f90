@@ -44,8 +44,43 @@ end module Global_variables
 module Calc
   use Global_variables
   implicit none
+  
+  integer :: IsBothScored(-1:2,-1:2), IsOppHom(-1:2,-1:2), IsDifferent(-1:2, -1:2)   
 
   contains 
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  subroutine init_lookups
+  
+    IsBothScored = 1
+    IsBothScored(-1,:) = 0
+    IsBothScored(:,-1) = 0
+    
+    IsDifferent = 1
+    IsDifferent(-1,:) = 0
+    IsDifferent(:,-1) = 0
+    IsDifferent(0,0) = 0
+    IsDifferent(1,1) = 0
+    IsDifferent(2,2) = 0
+
+    IsOppHom = 0
+    IsOppHom(0,2) = 1
+    IsOppHom(2,0) = 1 
+  
+  end subroutine init_lookups
+  
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  pure function nBothSNPd(A,B)
+    integer, intent(IN) :: A, B
+    integer :: nBothSNPd
+    integer :: l
+    
+    nBothSNPd = 0
+    do l=1,nSnp
+      nBothSNPd = nBothSNPd + IsBothScored(Genos(l,A), Genos(l,B))
+    enddo
+
+  end function nBothSNPd  
+  
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   pure function nDiffer(A,B)
     integer, intent(IN) :: A, B
@@ -54,10 +89,8 @@ module Calc
     
     nDiffer = 0
     do l=1,nSnp
-      if (Genos(l,A) /= Genos(l,B) .and. Genos(l,A)/=-1 .and. Genos(l,B)/=-1) then
-        nDiffer = nDiffer +1
-        if (nDiffer > maxDUP)  exit
-      endif
+      nDiffer = nDiffer + IsDifferent(Genos(l,A), Genos(l,B))
+      if (nDiffer > maxDUP)  exit
     enddo
 
   end function nDiffer
@@ -70,11 +103,8 @@ module Calc
   
     nOH = 0
     do l=1,nSnp
-      if ((Genos(l,A)==0 .and.Genos(l,B)==2) .or. &
-       (Genos(l,A)==2 .and. Genos(l,B)==0)) then
-        nOH = nOH+1
-        if (nOH > maxOH) exit
-      endif                  
+      nOH = nOH + IsOppHom(Genos(l,A), Genos(l,B))
+      if (nOH > maxOH) exit               
     enddo
 
   end function nOH 
@@ -580,6 +610,8 @@ subroutine find_dups(FileName_part)
   
   FileName = trim(FileName_part)//'_DUP.txt'
   
+  call init_lookups()
+  
   nPairs = 0
   open(unit=201, file=trim(FileName), status='unknown')
     if (DoProbs) then
@@ -601,7 +633,7 @@ subroutine find_dups(FileName_part)
         endif  
         
         ! if arrived here, i+j are potential duplicate samples from same individual
-        Lboth = COUNT(Genos(:,i)/=-1 .and. Genos(:,j)/=-1) 
+        Lboth = nBothSNPd(i,j)  
         if (DoProbs) then
           write(201, '(2i7, 5X, 2a20, 2i7, 6f12.4)') i,j, Id(i), Id(j), Diff_ij, Lboth, probs_ij
         else
@@ -639,6 +671,8 @@ subroutine find_PO(FileName_part)
   
   FileName = trim(FileName_part)//'_PO.txt'
   
+  call init_lookups()
+  
   nPairs = 0
   open(unit=201, file=trim(FileName), status='unknown')
     if (DoProbs) then
@@ -660,7 +694,7 @@ subroutine find_PO(FileName_part)
         endif  
         
         ! if arrived here, i+j are potential parent-offspring pair
-        Lboth = COUNT(Genos(:,i)/=-1 .and. Genos(:,j)/=-1) 
+        Lboth = nBothSNPd(i,j) 
         if (DoProbs) then
           write(201, '(2i7, 5X, 2a20, 2i7, 6f12.4)') i, j, Id(i), Id(j), OH_ij, Lboth, probs_ij
         else
