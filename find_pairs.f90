@@ -19,9 +19,9 @@
 ! - text file with ID1 - ID2 - OH - SnpdBoth  for pairs with OH <= maxOH
 !
 ! to compile:
-! gfortran -O3 find_PO_dups.f90 -o findPO
+! gfortran -O3 find_pairs.f90 -o findpairs
 ! to debug:
-! gfortran -Wall -pedantic -fbounds-check -g -Og find_PO_dups.f90 -o findPO
+! gfortran -Wall -pedantic -fbounds-check -g -Og find_pairs.f90 -o findpairs
 
 ! TODO: timestamps
 
@@ -298,7 +298,7 @@ Module Probs_module
         enddo
       enddo
     enddo
-
+    
   end subroutine Precalc_pairLLs
 
   !===============================================================================
@@ -543,7 +543,7 @@ program main
             stop
           endif
           
-        case ('--max_dif')
+        case ('--max_dif', '--max_dup')
           i = i+1
           call get_command_argument(i, argOption)
           read(argOption, *)  maxDIF
@@ -664,7 +664,7 @@ program main
   ! TODO update
   contains
     subroutine print_help()
-        print '(a)',  'Find potential parent-offspring pairs based on OH count'
+        print '(a)',  'Find potential duplicates and relative pairs'
         print '(a, /)', 'command-line options:'
         print '(a)',    '  -h, --help          print usage information and exit'
         print '(a)',    '  --geno <filename>   file with genotype data. Default: Geno.txt'
@@ -672,7 +672,8 @@ program main
         print '(a)',    '  --po                search for potential parent-offspring pairs' 
         print '(a)',    '  --focal <REL>       search for pairs with relationship REL, where ', &
                         '                        REL is S, PO, FS, GP, HA, or UU'
-        print '(a)',    '  --max_dup <n>       maximum number of differences between duplicate samples' 
+        print '(a)',    '  --max_dif <n>       maximum number of differences between duplicate samples'
+        print '(a)',    '  --max_dup <n>       synonym for --max_dif' 
         print '(a)',    '  --max_oh <n>        maximum OH count for potential PO pairs. Default: 1', &
                         '                        see ?sequoia::MaxMismatch in R'  
         print '(a)',    '  --min_prob <p>      optional, select also based on LLR-based probability'  
@@ -702,7 +703,7 @@ subroutine find_pairs(FileName_part, focal)
   character(len=nchar_filename), intent(IN) :: FileName_part 
   integer, intent(IN) :: focal  ! 0=self (duplicates), 1=PO, 2=FS, 3=GP, 4=HA, 5=U
   character(len=nchar_filename+7) :: FileName
-  integer :: i,j, Lboth, nPairs, cnt_ij, max_cnt
+  integer :: i,j, nPairs, cnt_ij, max_cnt, Lscored(3)
   double precision :: probs_ij(nRel)
   character(len=:), allocatable :: summary_lbl
   character(len=:), allocatable :: nx
@@ -733,10 +734,12 @@ subroutine find_pairs(FileName_part, focal)
   cnt_ij = 0
   open(unit=201, file=trim(FileName), status='unknown')
     if (DoProbs) then
-      write(201, '(2a7, 2a20, 5X, 2a10, 6(5X, a7))') 'row1', 'row2', 'ID1', 'ID2', nx, 'SnpdBoth', &
+      write(201, '(2a7, 2a20, 5X, 4a10, 6(5X, a7))') 'row1', 'row2', 'ID1', 'ID2', nx, &
+       'Snpd1', 'Snpd2', 'SnpdBoth', &
        'prob_S ', 'prob_PO', 'prob_FS', 'prob_GP', 'prob_HA', 'prob_UU'
     else
-      write(201, '(2a7, 2a20, 5X, 2a10)') 'row1', 'row2', 'ID1', 'ID2', nx, 'SnpdBoth'
+      write(201, '(2a7, 2a20, 5X, 4a10)') 'row1', 'row2', 'ID1', 'ID2', nx, &
+       'Snpd1', 'Snpd2', 'SnpdBoth'
     endif
   
     do i=1, nInd-1
@@ -755,11 +758,13 @@ subroutine find_pairs(FileName_part, focal)
         endif  
         
         ! if arrived here, i+j are potential duplicate samples from same individual
-        Lboth = nBothSNPd(i,j)  
+        Lscored(1) = COUNT(Geno(:,i) >= 0)
+        Lscored(2) = COUNT(Geno(:,j) >= 0)
+        Lscored(3) = nBothSNPd(i,j)  
         if (DoProbs) then
-          write(201, '(2i7, 5X, 2a20, 2i10, 6f12.4)') i,j, Id(i), Id(j), cnt_ij, Lboth, probs_ij
+          write(201, '(2i7, 5X, 2a20, 4i10, 6f12.4)') i,j, Id(i), Id(j), cnt_ij, Lscored, probs_ij
         else
-          write(201, '(2i7, 5X, 2a20, 2i10)') i,j, Id(i), Id(j), cnt_ij, Lboth
+          write(201, '(2i7, 5X, 2a20, 4i10)') i,j, Id(i), Id(j), cnt_ij, Lscored
         endif
         nPairs = nPairs +1         
       enddo
