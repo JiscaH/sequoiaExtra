@@ -30,6 +30,10 @@ module Fun
     print '(a)',    '  --out         output file'
     print '(a)',    '  --lower       export pairs with R value below this threshold'
     print '(a)',    '  --upper       export pairs with R value above this threshold'
+    print '(a)',    '  --diag_lower   export individuals (on diagonal) with R value below this threshold'
+    print '(a)',    '  --diag_upper   export individuals (on diagonal) with R value above this threshold'
+    print '(a)',    '  --betw_lower   export non-diagonal pairs with R value below this threshold'
+    print '(a)',    '  --betw_upper   export non-diagonal pairs with R value above this threshold'
     print '(a)',    '  --only        only consider pairs with one or both individuals listed'
     print '(a)',    '  --only-among  only consider pairs with both individuals listed'
     print '(a)',    '  --quiet       hide counter while running and message when done.'
@@ -90,15 +94,19 @@ program filter_grm
   use Fun
   implicit none
    
-  integer :: x, i,j, z, n, ios, nArg, nrows_grm, print_chunk, p
-  double precision :: r, lowr, upr
+  integer :: x, i,j, z, n, ios, nArg, p
+  integer,parameter :: ik10 = selected_int_kind(10)
+  integer(kind=ik10) :: nrows_grm, print_chunk, timing_y, y
+  double precision :: r, lowr_d, upr_d, lowr_b, upr_b, CurrentTime(2)
   character(len=32) :: arg, argOption
   character(len=nchar_filename) :: infile, outfile, OnlyListFileName
-  logical :: FileOK, quiet, OnlyAmong
+  logical :: FileOK, quiet, OnlyAmong, WritePair
   
   ! set default values
-  lowr = -HUGE(0D0)
-  upr = HUGE(0D0)
+  lowr_d = -HUGE(0D0)
+  upr_d = HUGE(0D0)
+  lowr_b = -HUGE(0D0)
+  upr_b = HUGE(0D0)
   infile = 'nofile'
   outfile = 'grm_filter_output.txt'
   OnlyListFileName = 'nofile'
@@ -129,12 +137,34 @@ program filter_grm
       case ('--lower')
         i = i+1
         call get_command_argument(i, argOption)
-        read(argOption, *)  lowr
+        read(argOption, *)  lowr_d
+        lowr_b = lowr_d
         
       case ('--upper')
         i = i+1
         call get_command_argument(i, argOption)
-        read(argOption, *)  upr
+        read(argOption, *)  upr_d
+        upr_b = upr_d
+        
+      case ('--diag_lower')
+        i = i+1
+        call get_command_argument(i, argOption)
+        read(argOption, *)  lowr_d
+        
+      case ('--diag_upper')
+        i = i+1
+        call get_command_argument(i, argOption)
+        read(argOption, *)  upr_d
+      
+      case ('--betw_lower')
+        i = i+1
+        call get_command_argument(i, argOption)
+        read(argOption, *)  lowr_b
+        
+      case ('--betw_upper')
+        i = i+1
+        call get_command_argument(i, argOption)
+        read(argOption, *)  upr_b
         
       case ('--only ')
         i = i+1
@@ -195,7 +225,18 @@ program filter_grm
       read(12, *)  x, ID(i)
     enddo
   close(12)
+
+  print *, 'Read in IDs, N individuals =', nInd
   
+  nrows_grm = (int(nInd, kind=ik10) * (nInd-1)/2 + nInd)
+
+  print *, '--> # rows grm =' ,  nrows_grm
+  if (nrows_grm < 0) then
+    print *, '# rows exceeds current storage mode!'
+    print *, 'Increase selected_int_kind() on line 103'
+    print *, ' or contact jisca.huisman@gmail.com'
+    stop
+  endif
   
   ! read in --only list
   allocate(skip(nInd))
@@ -219,8 +260,9 @@ program filter_grm
   ! decompression instruction, this forms the flow into the pipe
   ! between brackets: run in separate subshell
   ! &: put the process in background
-  call EXECUTE_COMMAND_LINE("(gzip -dc  "//trim(infile)//".grm.gz > grmpipe) &")
-  
+  call EXECUTE_COMMAND_LINE("(pigz -dc  "//trim(infile)//".grm.gz > grmpipe) &")
+  !call EXECUTE_COMMAND_LINE("(gzip -dc  "//trim(infile)//".grm.gz > grmpipe) &")
+
   ! open a read (outflow) connection to the pipe
   open(11, file="grmpipe", action='read')  
    
@@ -228,16 +270,26 @@ program filter_grm
   open(42, file=trim(outfile), action='write')  
     write(42, '(2a10, 2X, 2a40, a10, a15)') 'index1', 'index2', 'ID1', 'ID2', 'nSNP', 'R'
 
-    nrows_grm = (nInd * (nInd-1)/2 + nInd)
     n = 0
     print_chunk = roundit(nrows_grm/20D0)  ! print at approx every 5% progress
     p = 0
+    timing_y = roundit(nrows_grm/50D0)   ! round at which to estimate & print total runtime
+    call cpu_time(CurrentTime(1))
     
-    do x = 1, nrows_grm
-      if (.not. quiet .and. MOD(x, print_chunk)==0) then
-        p = p +1
-        print *, x, '  ', p*5, '%'
+    do y = 1, nrows_grm
+      
+      if (.not. quiet) then
+        if (MOD(y, print_chunk)==0) then
+          p = p +1
+          print *, y, '  ', p*5, '%'
+        else if (y == timing_y) then
+          call cpu_time(CurrentTime(2))
+          print *, ''
+          write(*,'("Estimated total runtime (min): ", f7.1)')  (CurrentTime(2) - CurrentTime(1))*50/60
+          print *, ''
+        endif
       endif
+      
       read(11, *, iostat=ios) i,j,z,r  
       if (ios/=0) exit   ! stop if end of file / incorrect entry
       if (skip(i) .and. skip(j))  cycle
@@ -245,7 +297,13 @@ program filter_grm
         if (skip(i) .or. skip(j))  cycle
       endif
       ! write to outfile entries that meet criteria
-     if (r < lowr .or. r > upr) then
+      WritePair = .FALSE.
+      if (i==j) then  ! diagonal
+        if (r < lowr_d .or. r > upr_d)   WritePair = .TRUE.
+      else
+        if (r < lowr_b .or. r > upr_b)   WritePair = .TRUE.
+      endif      
+     if (WritePair) then
        n = n+1
        write(42, '(2i10, 2X, 2a40, i10, e15.6)')  i, j, ID(i), ID(j), z, r
      endif   
@@ -263,11 +321,11 @@ program filter_grm
   
   ! Warning if number of entries read from .grm.gz does not match number of 
   ! IDs read from .grm.id
-  if (x < (nInd * (nInd-1)/2 + nInd)) then
+  if (y < (nInd * (nInd-1)/2 + nInd)) then
     write(*,*)  ""
     write(*,*)  "   WARNING !!!"
     write(*,*)  "Number of entries read from ", trim(infile),".grm.gz ", &
-      "( ", x, " ) does not match number of individuals in ", &
+      "( ", y, " ) does not match number of individuals in ", &
       trim(infile),".grm.id ( ", nInd, " )"
     write(*,*)  ""
   endif

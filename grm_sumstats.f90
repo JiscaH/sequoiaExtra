@@ -1,14 +1,12 @@
 ! read in a GRM file pair as returned by PLINK --make-grm-gz,
-! and return rows for which R < lower bound or R > upper bound.
-! useful to identify and investigate outlier values, or 
-! to select close relatives.
+! and return various summary statistics, calculated on ln 286-297
 
 ! by: Jisca Huisman, Sept. 2023  jisca.huisman@gmail.com
+! updated Jan. 2024: separate counts of R>1.5 etc. on diagonal vs off-diagonal
 
 ! The named pipe approach is derived from
 ! https://genomeek.wordpress.com/2012/05/07/tips-reading-compressed-file-with-fortran-and-named-pipe/
  
-
 
 !===============================================================================
 module Fun
@@ -101,9 +99,11 @@ program grm_sumstats
   use Fun
   implicit none
    
-  integer :: x, i,j, z, n, ios, nArg, nrows_grm, print_chunk, p, timing_x
+  integer :: x, i,j, z, n, ios, nArg, p
+  integer,parameter :: ik10 = selected_int_kind(10)
+  integer(kind=ik10) :: nrows_grm, print_chunk, timing_y, y
   double precision :: r, CurrentTime(2)
-  character(len=32) :: arg, argOption
+  character(len=32) :: arg !, argOption
   character(len=nchar_filename) :: infile, outfile, OnlyListFileName
   logical :: FileOK, quiet
   double precision, allocatable, dimension(:) :: GRM
@@ -193,8 +193,18 @@ program grm_sumstats
     enddo
   close(12)
   
+  print *, 'Read in IDs, N individuals =', nInd
   
-  nrows_grm = (nInd * (nInd-1)/2 + nInd)
+  nrows_grm = (int(nInd, kind=ik10) * (nInd-1)/2 + nInd)
+
+  print *, '--> # rows grm =' ,  nrows_grm
+  if (nrows_grm < 0) then
+    print *, '# rows exceeds current storage mode!'
+    print *, 'Increase selected_int_kind() on line 103'
+    print *, ' or contact jisca.huisman@gmail.com'
+    stop
+  endif
+
   allocate(GRM(nrows_grm))
   GRM = -999D0
   allocate(indx(2, nrows_grm))
@@ -202,7 +212,7 @@ program grm_sumstats
   allocate(nSnp(nrows_grm))
   nSnp = 0
   allocate(IsDiagonal(nrows_grm))
-  IsDiagonal = .FALSE.
+  IsDiagonal = .FALSE.  
     
   
   ! read in --only list
@@ -214,7 +224,6 @@ program grm_sumstats
     skip = .FALSE.
   endif
 
-
   ! create & open named pipe with data from .grm.gz
   ! NOTE: EXECUTE_COMMAND_LINE() is fortran 2008 standard, 
   ! and possibly not supported by ifort. 
@@ -223,7 +232,7 @@ program grm_sumstats
   ! create a named pipe
   ! see https://www.linuxjournal.com/article/2156
   call EXECUTE_COMMAND_LINE("rm -f grmpipe ; mkfifo grmpipe")
-  
+
   ! decompression instruction, this forms the flow into the pipe
   ! between brackets: run in separate subshell
   ! &: put the process in background
@@ -232,20 +241,21 @@ program grm_sumstats
 
   ! open a read (outflow) connection to the pipe
   open(11, file="grmpipe", action='read')  
+  
     
     n = 0
     print_chunk = roundit(nrows_grm/20D0)  ! print at approx every 5% progress
     p = 0
-    timing_x = roundit(nrows_grm/50D0)   ! round at which to estimate & print total runtime
+    timing_y = roundit(nrows_grm/50D0)   ! round at which to estimate & print total runtime
     call cpu_time(CurrentTime(1))
-    
-    do x = 1, nrows_grm
+
+    do y = 1, nrows_grm
       
       if (.not. quiet) then
-        if (MOD(x, print_chunk)==0) then
+        if (MOD(y, print_chunk)==0) then
           p = p +1
-          print *, x, '  ', p*5, '%'
-        else if (x == timing_x) then
+          print *, y, '  ', p*5, '%'
+        else if (y == timing_y) then
           call cpu_time(CurrentTime(2))
           print *, ''
           write(*,'("Estimated total runtime (min): ", f7.1)')  (CurrentTime(2) - CurrentTime(1))*50/60
@@ -256,10 +266,10 @@ program grm_sumstats
       read(11, *, iostat=ios) i,j,z,r  
       if (ios/=0) exit   ! stop if end of file / incorrect entry
       if (skip(i) .and. skip(j))  cycle 
-      indx(:,x) = (/i,j/)
-      nSnp(x) = z
-      GRM(x) = r
-      if (i==j)  Isdiagonal(x) = .TRUE.
+      indx(:,y) = (/i,j/)
+      nSnp(y) = z
+      GRM(y) = r
+      if (i==j)  Isdiagonal(y) = .TRUE.
   
     end do
   
@@ -268,11 +278,11 @@ program grm_sumstats
   
   ! Warning if number of entries read from .grm.gz does not match number of 
   ! IDs read from .grm.id
-  if (x < (nInd * (nInd-1)/2 + nInd)) then
+  if (y < (nInd * (nInd-1)/2 + nInd)) then
     write(*,*)  ""
     write(*,*)  "   WARNING !!!"
     write(*,*)  "Number of entries read from ", trim(infile),".grm.gz ", &
-      "( ", x, " ) does not match number of individuals in ", &
+      "( ", y, " ) does not match number of individuals in ", &
       trim(infile),".grm.id ( ", nInd, " )"
     write(*,*)  ""
   endif
@@ -289,16 +299,18 @@ program grm_sumstats
     write(42,*)  'mean_SNPs ',  SUM(nSnp/1000D0) / nrows_grm * 1000D0   ! got rounded to INF..
     write(42,*)  'min_R     ',  MINVAL(GRM)
     write(42,*)  'max_R     ',  MAXVAL(GRM)
-    write(42,*)  'count_1.5 ',  COUNT(GRM > 1.5)
-    write(42,*)  'count_5   ',  COUNT(GRM > 5)
     write(42,*)  'mean_diag ',  SUM(GRM, MASK=IsDiagonal)/COUNT(IsDiagonal)
     write(42,*)  'sd_diag   ',  SD(GRM, MASK=IsDiagonal)   ! function defined in module Fun
     write(42,*)  'mean_betw ',  SUM(GRM, MASK=(.not. IsDiagonal))/COUNT(.not. IsDiagonal)
     write(42,*)  'sd_betw   ',  SD(GRM, MASK=(.not. IsDiagonal)) 
+    write(42,*)  'count_1.5_diag ',  COUNT(GRM > 1.5 .and. IsDiagonal)
+    write(42,*)  'count_5_diag   ',  COUNT(GRM > 5 .and. IsDiagonal)
+    write(42,*)  'count_0.7_betw ',  COUNT(GRM > 0.7 .and. .not. IsDiagonal)
+    write(42,*)  'count_0.8_betw ',  COUNT(GRM > 0.8 .and. .not. IsDiagonal)
+    write(42,*)  'count_1.5_betw ',  COUNT(GRM > 1.5 .and. .not. IsDiagonal)
   close(42)
   
-  
-  
+ 
   ! clean up
   if (allocated(ID))  deallocate(ID)  
   if (allocated(skip))  deallocate(skip)
