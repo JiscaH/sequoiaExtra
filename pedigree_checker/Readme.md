@@ -1,6 +1,5 @@
-
-# "Manual for `pedigree_checker.f90`"
-### "A fortran program to check consistency between pedigree and SNP data"
+# Manual for `pedigree_checker.f90`
+### A fortran program to check consistency between pedigree and SNP data
 
 
 ## Description
