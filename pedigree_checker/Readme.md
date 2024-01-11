@@ -1,21 +1,7 @@
----
-title: "Manual for `pedigree_checker.f90`"
-subtitle: "A fortran program to check consistency between pedigree and SNP data"
-author: "Jisca Huisman"
-date: "2024-01-11"
-output: 
-  pdf_document: default
-  html_document: default
-  bookdown::gitbook: 
-    number_sections: false
-    self_contained: true
----
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, eval=FALSE)
-```
+# "Manual for `pedigree_checker.f90`"
+## "A fortran program to check consistency between pedigree and SNP data"
 
---------------
 
 ## Description
 
@@ -33,7 +19,6 @@ In fact, 'pedigree' is here extremely loosely defined: the pedigree file may con
 
 Pairs can be included too, as trios where one parent is missing ('NA'); probabilities are only calculated for this parent being unrelated (UU). Non-genotyped parents are treated the same as missing parents. 
 
---------------
 
 ## Assumptions and simplifications
 
@@ -44,7 +29,6 @@ Pairs can be included too, as trios where one parent is missing ('NA'); probabil
 
 For more sophisticated treatment of relative pairs, please see `sequoia` (https://jiscah.github.io/).  
 
---------------
 
 ## Requirements & preparation
 
@@ -58,7 +42,6 @@ gfortran -O3 pedigree_checker.f90 -o PedChecker
 where `gfortran` is the name of a Fortran compiler and `-O3` is the optimisation level. 
 On many platforms `-O4` may be available as well for a faster program. The choice of program name (after `-o`) is completely free. 
 
---------------
 
 ## Input
 
@@ -106,9 +89,6 @@ This can be useful when the genotype file contains a small subset of a larger po
 If none is provided, allele frequencies are calculated from the genotype data. 
 
 
---------------
-
-
 ## Execute
 
 ```{bash}
@@ -122,7 +102,6 @@ to avoid divisions by zero.
 An overview of the commands can be found with `./PedChecker --help`. 
 
 
---------------
 
 ## Output
 
@@ -143,7 +122,6 @@ The output consists of the the trios in the pedigree file, with 3+25 (or 16 with
 With option `--LLR`  log10-likelihoods (LL) are returned instead of probabilities, scaled for each trio by the LL that both parents are Unrelated, i.e. results are not scaled by $P(R)$. 
 
 
---------------
 
 ## Post-processing in R
 
@@ -176,7 +154,6 @@ a trio may have the following probabilities:
 Then `pair_TopRel` = HA_PO, but `dam_TopRel` = GP (0.275+0.304 > 0.416). 
 
 
---------------
 
 ## Calculations
 
@@ -209,11 +186,8 @@ The non-genetic probability of the relationship $P(R)$ includes in `sequoia` the
 
 
 
---------------
-
 ## Disclaimer
 
 While every effort has been made to ensure that this program provides what it claims to do, there is absolutely no guarantee that the results provided are correct. Use is entirely at your own risk.
 
 
---------------
