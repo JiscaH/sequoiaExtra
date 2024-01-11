@@ -16,36 +16,67 @@
 module global
   implicit none
 
-  integer :: nInd, nSnp, nTrios, ID_len, nRel
-  integer, parameter :: nchar_filename = 2000, nchar_ID = 40
-  integer,allocatable,dimension(:,:) :: Genos, Trios
+  integer :: nInd, nSnp, nTrios, ID_len, nRel 
+  integer,allocatable,dimension(:,:) :: Geno, Trios
   logical :: quiet
-  double precision :: OcA(-1:2,3), OKA2P(-1:2,3,3), AKA2P(3,3,3)
   double precision, parameter :: Missing = 999D0
-  double precision, allocatable, dimension(:,:) :: AHWE, OHWE
-  double precision, allocatable, dimension(:,:,:) :: AKAP, OKAP
   double precision, allocatable, dimension(:,:,:,:,:,:) :: LL_trio
+  
+  contains
+    subroutine timestamp(spaceIN)
+      logical, intent(IN), OPTIONAL :: spaceIN
+      logical :: space
+      integer :: date_time_values(8)
+      
+      if(present(spaceIN))then
+        space=spaceIN
+      else
+        space=.FALSE.
+      endif
+      ! NOTE: print *, & write(*,*)  have initital space, write(*,'(...)')  does not
+      
+      call date_and_time(VALUES=date_time_values)
+      write(*,'(i2.2,":",i2.2,":",i2.2, 1X)', advance='no') date_time_values(5:7)
+      if (space) write(*, '(1X)', advance='no')
+       
+    end subroutine timestamp
+    
+    subroutine printt(text)
+      character(len=*), intent(IN) :: text
+    
+      call timestamp()
+      print *, text
+    
+    end subroutine printt
+
+end module global
+
+!===============================================================================
+
+module FileIO
+  use Global
+  implicit none
+  
+  integer, parameter :: nchar_filename = 2000, nchar_ID = 40
   character(len=nchar_ID), allocatable, dimension(:) :: Id 
   character(len=nchar_ID), allocatable, dimension(:,:) :: TrioNames
   character(len=7) :: Ped_header(3)
-  
-    !=========================
-  contains
-    !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    ! count number of columns in text file
-    !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    integer function FileNumCol(FileName)
-      implicit none
 
+  contains
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    integer function FileNumCol(FileName)
       character(len=*), intent(IN) :: FileName
       integer :: j, strLen, numcol
-      character(len=5000) :: line
+      character(:), allocatable :: line
+      
+      allocate(character(500000) :: line)
 
       open(unit=102, file=trim(FileName), status="old")
       read(102, '(a)' ) line
       close(102) 
 
       strLen = len_trim(line)
+      if (strLen >= 500000)  print *, 'WARNING: EXCEEDING MAXIMUM NUMBER OF SNPs!'
       if (strLen  == 0) then
         FileNumCol = 0
         return
@@ -62,23 +93,19 @@ module global
           endif
         endif
       enddo
-      FileNumCol = numcol
+      FileNumCol = numcol  
+
+      deallocate(line)
 
     end function FileNumCol
-    !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-
-    !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    ! count number of rows in text file
     !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     integer function FileNumRow(FileName)
-      implicit none
-
       character(len=*), intent(IN) :: FileName
       integer :: nrow, i, maxRow, IOerr
-      character(len=5000) :: dumC
+      character(len=42) :: dumC
 
-      maxRow = 5000000  ! fail safe
+      maxRow = 1e6  ! fail safe
       nrow = 0
       open(unit=102, file=trim(FileName), status="old")
       do i=1, maxRow
@@ -93,10 +120,183 @@ module global
       FileNumRow = nrow
 
     end function FileNumRow
-    !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  
+end module FileIO
 
-end module global
+!===============================================================================
 
+module Probs
+  implicit none
+  private :: getAF
+
+  double precision :: OcA(-1:2,3), OKA2P(-1:2,3,3), AKA2P(3,3,3)
+  double precision, allocatable, dimension(:,:) :: AHWE, OHWE
+  double precision, allocatable, dimension(:,:,:) :: AKAP, OKAP
+  
+  contains
+    subroutine PrecalcProbs(Er, AF_FileName)
+    use Global, ONLY: nSnp
+
+    double precision, intent(IN) :: Er
+    character(len=*), intent(IN) :: AF_FileName
+    integer :: h,i,j,k,l
+    double precision ::  AF(nSnp), Tmp(3)
+
+    ! allele frequencies
+    AF = getAF(AF_FileName)
+    
+
+    !###################
+    ! probabilities actual genotypes under HWE
+    allocate(AHWE(3,nSnp))
+    do l=1,nSnp
+      AHWE(1,l)=(1 - AF(l))**2 
+      AHWE(2,l)=2*AF(l)*(1-AF(l)) 
+      AHWE(3,l)=AF(l)**2 
+    enddo
+
+
+    ! Prob. observed (rows) conditional on actual (columns) 
+    ! 'ErrFlavour' = 2.0
+    OcA(-1,:) = 1.0D0      ! missing 
+    OcA(0:2, 1) = (/ (1-Er/2)**2, Er*(1-Er/2), (Er/2)**2 /)   ! act=0
+    OcA(0:2, 2) = (/ Er/2, 1-Er, Er/2 /)                      ! act=1
+    OcA(0:2, 3) = (/ (Er/2)**2, Er*(1-Er/2),  (1-Er/2)**2 /)  ! act=2
+
+
+    ! probabilities observed genotypes under HWE  + genotyping error pattern
+    allocate(OHWE(-1:2,nSnp))
+    do l=1,nSnp
+      do i=-1,2    ! obs
+        OHWE(i,l) = SUM( OcA(i,:) * AHWE(:, l) )
+      enddo
+    enddo
+
+
+    ! ########################
+    ! inheritance conditional on 1 parent
+    allocate(AKAP(3,3,nSnp))
+    allocate(OKAP(-1:2,3,nSnp))
+
+    do l=1,nSnp
+      AKAP(1, :, l) = (/ 1-AF(l), (1-AF(l))/2, 0.0D0 /)
+      AKAP(2, :, l) = (/ AF(l), 0.5D0, 1-AF(l) /)
+      AKAP(3, :, l) = (/ 0D0, AF(l)/2, AF(l) /)
+    enddo
+
+    do l=1,nSnp
+      do i=-1,2  ! obs offspring
+        do j=1,3    ! act parent
+          Tmp=0D0
+          do k=1,3    ! act offspring
+            Tmp(k) = OcA(i,k) * AKAP(k,j,l)
+          enddo
+          OKAP(i,j,l) = SUM(Tmp)
+        enddo
+      enddo
+    enddo
+
+
+    ! #########################
+    ! inheritance conditional on both parents
+
+    AKA2P(1,1,:) = dble((/ 1.0, 0.5, 0.0 /))
+    AKA2P(1,2,:) = dble((/ 0.5, 0.25, 0.0 /))
+    AKA2P(1,3,:) = dble((/ 0.0, 0.0, 0.0 /))
+
+    AKA2P(2,1,:) = dble((/ 0.0, 0.5, 1.0 /))
+    AKA2P(2,2,:) = dble((/ 0.5, 0.5, 0.5 /))
+    AKA2P(2,3,:) = dble((/ 1.0, 0.5, 0.0 /))
+
+    AKA2P(3,1,:) = dble((/ 0.0, 0.0, 0.0 /))
+    AKA2P(3,2,:) = dble((/ 0.0, 0.25, 0.5 /))
+    AKA2P(3,3,:) = dble((/ 0.0, 0.5, 1.0 /))
+
+    do i=-1,2  ! obs offspring
+      do j=1,3    ! act parent 1
+        do h=1,3    !act parent 2
+          Tmp=0D0
+          do k=1,3    ! act offspring
+            Tmp(k) = OcA(i,k) * AKA2P(k,j,h) 
+          enddo
+          OKA2P(i,j,h) = SUM(Tmp)
+        enddo
+      enddo
+    enddo
+
+  end subroutine PrecalcProbs
+  
+  !-----------------------------------
+  
+  function getAF(FileName)
+    use Global, ONLY: nSnp, Geno
+    use FileIO
+    
+    character(len=*), intent(IN) :: FileName
+    double precision :: getAF(nSnp)
+    integer :: l, nCol, nRow, AFcol, k, IOerr
+    character(len=50), allocatable :: header(:), tmpC(:)
+    double precision :: tmpD, AF(nSnp)
+    
+    AF = 1D0
+    
+    if (FileName == 'NoFile') then
+    
+      do l=1,nSnp
+        if (ANY(Geno(l,:)/=-1)) then
+          AF(l)=float(SUM(Geno(l,:), MASK=Geno(l,:)/=-1))/(COUNT(Geno(l,:)/=-1)*2)
+        endif
+      enddo
+    
+    else
+      if (.not. quiet)  print *, "Reading allele frequencies in "//trim(FileName)//" ... "
+    
+      nCol = FileNumCol(trim(FileName))
+      nRow = FileNumRow(trim(FileName))
+      if ((nCol==1 .and. nRow /= nSnp) .or. (nCol>1 .and. nRow /= (nSnp+1))) then
+        print *, "MAF file "//trim(FileName)//" has different number of SNPs than genotype file!"
+        stop
+      endif
+      allocate(header(nCol))
+      header = 'NA'
+      AFcol = 0
+      
+      open(unit=103, file=trim(FileName), status="old")     
+        if (nCol == 1) then
+          AFcol = 1
+        else
+          read(103,*)  header
+          do k=1, nCol
+            if (header(k) == 'MAF' .or. header(k)=='AF' .or. header(k)=='Frequency') then
+              AFcol = k
+            endif
+          enddo
+        endif
+        if (AFcol > 1)  allocate(tmpC(AFcol -1))
+        
+        do l=1, nSnp
+          if (AFcol == 1) then
+            read(103, *,IOSTAT=IOerr)  tmpD
+          else
+            read(103, *,IOSTAT=IOerr)  tmpC, tmpD
+          endif
+          if (IOerr > 0) then
+            print *, "Wrong input in file "//trim(FileName)//" on line ", l
+            stop
+          else if (IOerr < 0) then  
+            exit  ! EOF
+          else
+            AF(l) = tmpD
+          end if
+        enddo
+      close(103)
+    endif
+    
+    getAF = AF
+
+  end function getAF
+
+end module Probs
 
 
 ! ##############################################################################
@@ -105,6 +305,8 @@ end module global
 
 program pedigree_checker
   use Global
+  use FileIO
+  use Probs, ONLY: PrecalcProbs
   implicit none
 
   ! input
@@ -116,7 +318,14 @@ program pedigree_checker
   ! output
   integer, allocatable, dimension(:,:) :: OppHom
   double precision, allocatable, dimension(:,:,:) :: LL_out_array
-    
+  
+  write(*,*) ''
+  write(*,*) REPEAT('~',32)
+  write(*,*) '   >>>  PEDIGREE CHECKER  <<<'
+  write(*,*) REPEAT('~',32)
+  write(*,*) '||  Jisca Huisman  |  https://github.com/JiscaH  |  GNU GPLv3  ||'
+  write(*,*) ''
+  
     
   ! set default values
   PedFileName = 'Pedigree.txt'
@@ -133,7 +342,7 @@ program pedigree_checker
   nArg = command_argument_count()
 
   if (nArg == 0) then
-    if (.not. quiet)  print *, 'Using default values, see --help'
+    if (.not. quiet)  call printt('Using default values, see --help')
     
   else 
 
@@ -206,32 +415,36 @@ program pedigree_checker
 
 
   ! read in data & general prep
-  if (.not. quiet)  print *, "Reading genotype data in "//trim(GenoFileName)//" ... "
+  ! printt: timestamp() + print *,
+  if (.not. quiet)  call printt("Reading genotype data in "//trim(GenoFileName)//" ... ")
   call ReadGeno(GenoFileName)
   
   call PrecalcProbs(Er, AF_FileName) 
   
-  if (.not. quiet)  print *, "Reading trios in "//trim(PedFileName)//" ... "
+  if (.not. quiet)  call printt("Reading trios in "//trim(PedFileName)//" ... ")
   call ReadPedFile(PedFileName)
-  if (.not. quiet)  print *, "Read ", nTrios, " trios. "
+  if (.not. quiet) then
+    call timestamp()
+    print *, "Read ", nTrios, " trios. "
+  endif
 
   ! count number of opposing homozygous loci for each id-dam and id-sire pair, and id-dam-sire trio
-  if (.not. quiet)  print *, "Counting number of opposing homozygous loci ... "
+  if (.not. quiet)  call printt("Counting number of opposing homozygous loci ... ")
   allocate(OppHom(3, nTrios))
   call CalcOppHom(OppHom)
 
   ! calculate log-likelihoods
-  if (.not. quiet)  print *, "Calculating log-likelihoods ... "
+  if (.not. quiet)  call printt("Calculating log-likelihoods ... ")
   allocate(LL_out_array(nRel,nRel,nTrios))
   call Precalc_trioLLs()
   call CalcLL(LL_out_array)
 
   ! write to file
-  if (.not. quiet)  print *, "Writing output to file ... "
+  if (.not. quiet)  call printt("Writing output to file ... ")
   call writeped(LL_out_array, OppHom, CalcProbs, OutFileName)
   call DeAllocAll()
-  if (.not. quiet)  print *, ""
-  if (.not. quiet)  print *, "Done."
+  if (.not. quiet)  call printt("")
+  if (.not. quiet)  call printt("Done.")
 
   
   !=========================
@@ -267,11 +480,12 @@ end program pedigree_checker
 
 subroutine ReadGeno(GenoFileName)
   use Global
+  use FileIO
   implicit none
 
   character(len=nchar_filename), intent(IN) :: GenoFileName
   integer :: i, l
-  integer, allocatable, dimension(:) :: GenosV
+  integer, allocatable, dimension(:) :: GenoV
   character(len=3) :: maxchar_ID
   character(len=nchar_ID) :: IDx
   
@@ -279,9 +493,9 @@ subroutine ReadGeno(GenoFileName)
   nSnp = FileNumCol(trim(GenoFileName)) -1  ! column 1 = IDs
   nInd = FileNumRow(trim(GenoFileName))   
 
-  allocate(GenosV(nSnp))
-  allocate(Genos(nSnp, nInd))   ! transpose: faster
-  Genos = -1
+  allocate(GenoV(nSnp))
+  allocate(Geno(nSnp, nInd))   ! transpose: faster
+  Geno = -1
   allocate(Id(nInd))
   Id = "NA"
 
@@ -289,7 +503,7 @@ subroutine ReadGeno(GenoFileName)
 
   open (unit=101,file=trim(GenoFileName),status="old")
     do i=1,nInd
-      read (101,*)  IDx, GenosV
+      read (101,*)  IDx, GenoV
       if (ANY(Id == IDx)) then
         print *, "ERROR! IDs in genotype file must be unique"
         stop
@@ -297,14 +511,14 @@ subroutine ReadGeno(GenoFileName)
       Id(i) = IDx
       if (LEN_TRIM(Id(i)) > ID_len)  ID_len = LEN_TRIM(Id(i))
       do l=1,nSnp
-        if (GenosV(l)>=0 .and. GenosV(l)<=2) then
-          Genos(l,i) = GenosV(l)  
+        if (GenoV(l)>=0 .and. GenoV(l)<=2) then
+          Geno(l,i) = GenoV(l)  
         endif
       enddo 
     enddo
   close (101)
   
-  deallocate(GenosV)
+  deallocate(GenoV)
 
   if (ID_len > nchar_ID) then
     write(maxchar_ID, '(i3)')  nchar_ID
@@ -318,6 +532,7 @@ end subroutine ReadGeno
 
 subroutine ReadPedFile(FileName)
   use Global
+  use FileIO
   implicit none
 
   character(len=*), intent(IN) :: FileName
@@ -369,167 +584,11 @@ end subroutine ReadPedFile
 ! ##   General prep   ##
 ! ##############################################################################
 
-subroutine PrecalcProbs(Er, AF_FileName)
-  use Global
-  implicit none
 
-  double precision, intent(IN) :: Er
-  character(len=*), intent(IN) :: AF_FileName
-  integer :: h,i,j,k,l
-  double precision ::  AF(nSnp), Tmp(3)
-
-  ! allele frequencies
-  call getAF(AF_FileName, AF)
-  
-
-  !###################
-  ! probabilities actual genotypes under HWE
-  allocate(AHWE(3,nSnp))
-  do l=1,nSnp
-    AHWE(1,l)=(1 - AF(l))**2 
-    AHWE(2,l)=2*AF(l)*(1-AF(l)) 
-    AHWE(3,l)=AF(l)**2 
-  enddo
-
-
-  ! Prob. observed (rows) conditional on actual (columns) 
-  ! 'ErrFlavour' = 2.0
-  OcA(-1,:) = 1.0D0      ! missing 
-  OcA(0:2, 1) = (/ (1-Er/2)**2, Er*(1-Er/2), (Er/2)**2 /)   ! act=0
-  OcA(0:2, 2) = (/ Er/2, 1-Er, Er/2 /)                      ! act=1
-  OcA(0:2, 3) = (/ (Er/2)**2, Er*(1-Er/2),  (1-Er/2)**2 /)  ! act=2
-
-
-  ! probabilities observed genotypes under HWE  + genotyping error pattern
-  allocate(OHWE(-1:2,nSnp))
-  do l=1,nSnp
-    do i=-1,2    ! obs
-      OHWE(i,l) = SUM( OcA(i,:) * AHWE(:, l) )
-    enddo
-  enddo
-
-
-  ! ########################
-  ! inheritance conditional on 1 parent
-  allocate(AKAP(3,3,nSnp))
-  allocate(OKAP(-1:2,3,nSnp))
-
-  do l=1,nSnp
-    AKAP(1, :, l) = (/ 1-AF(l), (1-AF(l))/2, 0.0D0 /)
-    AKAP(2, :, l) = (/ AF(l), 0.5D0, 1-AF(l) /)
-    AKAP(3, :, l) = (/ 0D0, AF(l)/2, AF(l) /)
-  enddo
-
-  do l=1,nSnp
-    do i=-1,2  ! obs offspring
-      do j=1,3    ! act parent
-        Tmp=0D0
-        do k=1,3    ! act offspring
-          Tmp(k) = OcA(i,k) * AKAP(k,j,l)
-        enddo
-        OKAP(i,j,l) = SUM(Tmp)
-      enddo
-    enddo
-  enddo
-
-
-  ! #########################
-  ! inheritance conditional on both parents
-
-  AKA2P(1,1,:) = dble((/ 1.0, 0.5, 0.0 /))
-  AKA2P(1,2,:) = dble((/ 0.5, 0.25, 0.0 /))
-  AKA2P(1,3,:) = dble((/ 0.0, 0.0, 0.0 /))
-
-  AKA2P(2,1,:) = dble((/ 0.0, 0.5, 1.0 /))
-  AKA2P(2,2,:) = dble((/ 0.5, 0.5, 0.5 /))
-  AKA2P(2,3,:) = dble((/ 1.0, 0.5, 0.0 /))
-
-  AKA2P(3,1,:) = dble((/ 0.0, 0.0, 0.0 /))
-  AKA2P(3,2,:) = dble((/ 0.0, 0.25, 0.5 /))
-  AKA2P(3,3,:) = dble((/ 0.0, 0.5, 1.0 /))
-
-  do i=-1,2  ! obs offspring
-    do j=1,3    ! act parent 1
-      do h=1,3    !act parent 2
-        Tmp=0D0
-        do k=1,3    ! act offspring
-          Tmp(k) = OcA(i,k) * AKA2P(k,j,h) 
-        enddo
-        OKA2P(i,j,h) = SUM(Tmp)
-      enddo
-    enddo
-  enddo
-
-end subroutine PrecalcProbs
 
 !===============================================================================
 
-subroutine getAF(FileName, AF)
-  use Global 
-  implicit none
-  
-  character(len=*), intent(IN) :: FileName
-  double precision, intent(OUT) :: AF(nSnp)
-  integer :: l, nCol, nRow, AFcol, k, IOerr
-  character(len=50), allocatable :: header(:), tmpC(:)
-  double precision :: tmpD
-  
-  AF = 1D0
-  
-  if (FileName == 'NoFile') then
-  
-    do l=1,nSnp
-      if (ANY(Genos(l,:)/=-1)) then
-        AF(l)=float(SUM(Genos(l,:), MASK=Genos(l,:)/=-1))/(COUNT(Genos(l,:)/=-1)*2)
-      endif
-    enddo
-  
-  else
-    if (.not. quiet)  print *, "Reading allele frequencies in "//trim(FileName)//" ... "
-  
-    nCol = FileNumCol(trim(FileName))
-    nRow = FileNumRow(trim(FileName))
-    if ((nCol==1 .and. nRow /= nSnp) .or. (nCol>1 .and. nRow /= (nSnp+1))) then
-      print *, "MAF file "//trim(FileName)//" has different number of SNPs than genotype file!"
-      stop
-    endif
-    allocate(header(nCol))
-    header = 'NA'
-    AFcol = 0
-    
-    open(unit=103, file=trim(FileName), status="old")     
-      if (nCol == 1) then
-        AFcol = 1
-      else
-        read(103,*)  header
-        do k=1, nCol
-          if (header(k) == 'MAF' .or. header(k)=='AF' .or. header(k)=='Frequency') then
-            AFcol = k
-          endif
-        enddo
-      endif
-      if (AFcol > 1)  allocate(tmpC(AFcol -1))
-      
-      do l=1, nSnp
-        if (AFcol == 1) then
-          read(103, *,IOSTAT=IOerr)  tmpD
-        else
-          read(103, *,IOSTAT=IOerr)  tmpC, tmpD
-        endif
-        if (IOerr > 0) then
-          print *, "Wrong input in file "//trim(FileName)//" on line ", l
-          stop
-        else if (IOerr < 0) then  
-          exit  ! EOF
-        else
-          AF(l) = tmpD
-        end if
-      enddo
-    close(103)
 
-  endif
-
-end subroutine getAF
 
 ! ##############################################################################
 ! ##   Count OH   ##
@@ -568,7 +627,7 @@ integer :: l
 
 OH = 0
 do l=1,nSnp
-  if ((Genos(l,A)==0 .and.Genos(l,B)==2) .or. (Genos(l,A)==2 .and. Genos(l,B)==0)) then
+  if ((Geno(l,A)==0 .and.Geno(l,B)==2) .or. (Geno(l,A)==2 .and. Geno(l,B)==0)) then
     OH = OH+1
   endif                       
 enddo
@@ -599,20 +658,20 @@ Ecnt(:,3,3) = (/ 2, 1, 0 /)
 
 ME = 0
 do l=1,nSnp
-  if (Genos(l,A)==-1 .or. ALL(Genos(l, Par)==-1)) then
+  if (Geno(l,A)==-1 .or. ALL(Geno(l, Par)==-1)) then
     cycle
-  else if (ANY(Genos(l, Par)==-1)) then
+  else if (ANY(Geno(l, Par)==-1)) then
     do k=1,2
-      if (Genos(l, Par(k))==-1) then
-        if (((Genos(l,A)==0).and.(Genos(l,Par(3-k))==2)) .or. &
-         ((Genos(l,A)==2).and.(Genos(l,Par(3-k))==0))) then
+      if (Geno(l, Par(k))==-1) then
+        if (((Geno(l,A)==0).and.(Geno(l,Par(3-k))==2)) .or. &
+         ((Geno(l,A)==2).and.(Geno(l,Par(3-k))==0))) then
           ME = ME +1
           cycle
         endif
       endif
     enddo
   else
-    ME = ME + Ecnt(Genos(l,A)+1, Genos(l, Par(1))+1, Genos(l, Par(2))+1)
+    ME = ME + Ecnt(Geno(l,A)+1, Geno(l, Par(1))+1, Geno(l, Par(2))+1)
   endif
 enddo
 
@@ -624,6 +683,7 @@ end subroutine CalcTrioErr
 
 subroutine Precalc_trioLLs
   use Global
+  use Probs
   implicit none
 
   ! calculate likelihoods for PO+PO, PO+FA, PO+HA, PO+U, etc
@@ -763,6 +823,7 @@ end subroutine Precalc_trioLLs
 
 subroutine CalcLL(LL_array)
   use Global
+  use Probs, ONLY: AHWE, OcA
   implicit none
 
   double precision, intent(OUT) :: LL_array(nRel,nRel,nTrios)
@@ -781,7 +842,7 @@ subroutine CalcLL(LL_array)
       if (i==0) then
         PGeno(:,l,0) = AHWE(:,l)   ! when no parent
       else
-        Tmp1 = OcA(Genos(l,i), :) * AHWE(:, l)     
+        Tmp1 = OcA(Geno(l,i), :) * AHWE(:, l)     
         PGeno(:, l, i) = Tmp1 / SUM(Tmp1)
       endif
     enddo
@@ -805,7 +866,7 @@ subroutine CalcLL(LL_array)
           Tmp2 = 0D0
           do y=1,3  ! dam genotype
             do z=1,3  ! sire genotype
-              Tmp2(y,z) = LL_trio(Genos(l,Trios(1,j)), y,z, l, rel_d, rel_s) * &
+              Tmp2(y,z) = LL_trio(Geno(l,Trios(1,j)), y,z, l, rel_d, rel_s) * &
                 PGeno(y,l, Trios(2,j)) * PGeno(z,l, Trios(3,j))
             enddo
           enddo    
@@ -831,6 +892,7 @@ end subroutine CalcLL
 
 subroutine writeped(LL_array, OppHom, CalcProbs, FileName)
   use Global
+  use FileIO
   implicit none
 
   double precision, intent(IN) :: LL_array(nRel,nRel, nTrios)
@@ -911,9 +973,11 @@ end subroutine writeped
 
 subroutine deallocall
   use Global
+  use FileIO
+  use Probs
   implicit none
 
-  if (allocated(Genos)) deallocate(Genos)
+  if (allocated(Geno)) deallocate(Geno)
   if (allocated(Trios)) deallocate(Trios) 
 
   if (allocated(AHWE)) deallocate(AHWE)

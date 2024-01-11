@@ -1,55 +1,79 @@
+---
+title: "Manual for `pedigree_checker.f90`"
+subtitle: "A fortran program to check consistency between pedigree and SNP data"
+author: "Jisca Huisman"
+date: "2024-01-11"
+output: 
+  pdf_document: default
+  html_document: default
+  bookdown::gitbook: 
+    number_sections: false
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval=FALSE)
+```
+
+--------------
 
 ## Description
 
-This Fortran program takes a pedigree file and genotype data, and calculates for each offspring - dam - sire trio the probability that either or both parents are
+This program calculates for each offspring - dam - sire trio in a pedigree the probability that either or both parents are
     
   - PO = parent - offspring,
-  - FS = full siblings (optional)
-  - GP = grandparent or full avuncular,
+  - FS = full siblings
+  - GP = grandparent, half-sibling, or full avuncular,
   - HA = half avuncular or other 3rd degree relationship,
   - UU = unrelated;
   
 returning all 5x5=25 probabilities for each trio. 
 
-In fact, the 'pedigree' file may contain any arbitrary list of trios, such as offspring - sire - maternal grandsire. Each individual may occur multiple times in the offspring column, e.g. with different candidate parents. 
+In fact, 'pedigree' is here extremely loosely defined: the pedigree file may contain any arbitrary list of trios, such as offspring - sire - maternal grandsire. Each individual may occur multiple times in the offspring column, e.g. with different candidate parents. 
 
-Pairs can be included too, as simply trios where one 'parent' is 'NA'; probabilities are only calculated for this parent being unrelated (UU). Non-genotyped parents are treated the same as missing parents. 
+Pairs can be included too, as trios where one parent is missing ('NA'); probabilities are only calculated for this parent being unrelated (UU). Non-genotyped parents are treated the same as missing parents. 
 
+--------------
 
+## Assumptions and simplifications
 
-## Assumptions
+- The probabilities for each trio or pair are calculated independently;
+- Individuals can only be related as PO, FS, GP/HS/FA, HA, or UU; the possibility of inbred and double relationships is ignored; 
+- One 'parent' is related via the maternal side, and the other via the paternal side; the two 'parents' are unrelated;
+- All SNPs are independent, have the same (average) genotyping error rate, and genotype frequencies are in Hardy-Weinberg equilibrium. 
 
-- Founders (individuals with no parents in the pedigree) are all unrelated;
-                                                                                                                                                   
-- One 'parent' is related via the maternal side, and the other via the paternal side; the two 'parents' are unrelated (except when FS);
-- Individuals can only be related as PO, FS, GP/FA/HS, HA, or UU. Inbred and double relationships are ignored;
-- All SNPs are independent, have the same (average) genotyping error rate, and genotype frequencies are in Hardy-Weinberg equilibrium;
-- None of the relationships are impossible based on age difference.
+For more sophisticated treatment of relative pairs, please see `sequoia` (https://jiscah.github.io/).  
 
+--------------
 
-## Warnings
+## Requirements & preparation
 
-- Under these simplifying assumptions, the likelihoods for the three types of second degree relatives (GP/FA/HS) are identical, as are the likelihoods for all types of third degree relatives (HA). 
+- a Fortran compiler, e.g. gfortran (https://fortran-lang.org/en/learn/os_setup/install_gfortran/)
 
-- Inbred parent-parent-offspring trios, where the two parents are themselves parent and offspring, violate the second assumption and `prob_PO_PO` in the output will be (much) less than one for correct pairs. Use sequoia to identify and/or check such pairs.
+The source code first needs to be compiled with
+```{bash}
+gfortran -O3 pedigree_checker.f90 -o PedChecker
+```
 
-- There is no check whether two samples in a trio may come from the same individual; please use the sequoia R package with `Module=dup` or non-R sequoia with `--dup` first if duplicates may be included. 
+where `gfortran` is the name of a Fortran compiler and `-O3` is the optimisation level. 
+On many platforms `-O4` may be available as well for a faster program. The choice of program name (after `-o`) is completely free. 
 
+--------------
 
 ## Input
 
 
 ### SNP data
-To convert genotype data from standard PLINK format to the format for `sequoia` and `pedigree_checker`, 
-use
+The genotype filename and location is specified with `--geno`. 
+
+To convert genotype data from standard PLINK format to the format for `sequoia` and `pedigree_checker`, use
 
 ```{bash}
-plink --bfile FileNameIN --recode A --out FileNameOUT
-mv FileNameOUT.raw tmp.raw
-cat tmp.raw | tr -s ' ' | cut -d ' ' -f2,7- > FileNameOUT.raw
-sed -i '1d' FileNameOUT.raw 
-sed -i 's/NA/-9/g' FileNameOUT.raw
-rm tmp.raw
+plink --bfile genoFile --recode A --out genoFile
+cat genoFile.raw | tr -s ' ' | cut -d ' ' -f2,7- > genoFile.txt
+sed -i '1d' genoFile.txt
+sed -i 's/NA/-9/g' genoFile.txt
+rm genoFile.raw
 ```
 
 which
@@ -61,38 +85,103 @@ which
 
 This is implemented in `format_SNP_data_for_sequoia.sh`:
 ```{bash}
-./format_SNP_data_for_sequoia.sh FileNameIN
+./format_SNP_data_for_sequoia.sh genoFile
 ``` 
+which is also available at https://github.com/JiscaH/sequoiaExtra . 
 
 
 
 ### Pedigree / trios
-The only other input file contains the trios of individuals. 
-This can be a pedigree with columns id - dam - sire, but may for example also be id - sire - maternal grandsire. Column names should be maximum 7 characters long, longer names are shortened in the output. IDs may be maximum 40 characters long. 
+The pedigree file is specified with `--pedigreeIN` or `--trios`. This can be a
+pedigree with columns id - dam - sire, but may for example also be id - sire - maternal grandsire. 
+
+Column names are recycled and used in the output, and should be maximum 7 characters long, 
+longer names are shortened in the output. IDs may be maximum 40 characters long. 
+(Both limits are easily adjustable in the source code, near the top of 'module FileIO') 
 
 
+### Allele frequencies
+Optionally a text file with allele frequency at each SNP can be provided. 
+This can be useful when the genotype file contains a small subset of a larger population. 
+If none is provided, allele frequencies are calculated from the genotype data. 
+
+
+--------------
 
 
 ## Execute
 
-The code is compiled with
 ```{bash}
-gfortran -std=f95 -fall-intrinsics -O4 pedigree_checker.f90 -o PedChecker
+./PedChecker --geno genoFile.txt --pedigreeIN MyPedigree.txt \
+  --err 0.005 --out PedOUT_test.txt
 ```
 
-and run with
+Here `--err` is the presumed genotyping error rate. This must be strictly positive,
+to avoid divisions by zero. 
 
-```{bash}
-./PedChecker --trios PedigreeFile --geno FileNameOUT.raw --err 0.005 --out PedOUT_test.txt
+An overview of the commands can be found with `./PedChecker --help`. 
+
+
+--------------
+
+## Output
+
+The output consists of the the trios in the pedigree file, with 3+25 (or 16 with `--noFS`) added columns:
+
+ - OH_\<parent1>, OH_\<parent2>: the count of opposing homozygous SNPs between the focal (offspring) individual and <parent1>, and between the focal individual and \<parent2>. \<parent1> and \<parent2> are the column names of the 2nd and 3rd column in the input file. Missing value = -9
+ - ME_pair: number of Mendelian Errors between the focal individual and the parent pair. Missing value = -9
+ - prob_PO_PO : the probability that both the dam and the sire have a Parent-Offspring relationship with the focal individual. Missing value = 9999.0000
+- prob_.._.. : as for prob_PO_PO, where the first abbreviation denotes \<parent1> and the second \<parent2>, and 
+
+    - PO = parent -- offspring
+    - FS = full sibling
+    - GP = grand-parental, half sibling, or full avuncular
+    - HA = half avuncular or other 3rd degree relationship
+    - UU = unrelated.
+
+
+With option `--LLR`  log10-likelihoods (LL) are returned instead of probabilities, scaled for each trio by the LL that both parents are Unrelated, i.e. results are not scaled by $P(R)$. 
+
+
+--------------
+
+## Post-processing in R
+
+A logical next step is to determine for each trio the relationship combination with 
+the highest probability, and/or for each 'parent' the most likely relationship 
+to the focal individual. For this the R function `pedChecker_topRel` is available,
+which can be accessed in R using 
+
+```{r, eval=FALSE, echo=TRUE}
+source('https://raw.githubusercontent.com/JiscaH/sequoiaExtra/main/pedigree_checker/pedChecker_toprel.R')
 ```
 
-an overview of the commands can be found with `./PedChecker --help`. 
+(To get the URL: from https://github.com/JiscaH/sequoiaExtra browse to the R file, then click 'raw')
+
+Some help is included at the top of this R file. 
+
+Note that `pair_TopRel` may occasionally appear inconsistent with `dam_TopRel`. For example,
+a trio may have the following probabilities:
+
+```{r}
+#     sire
+# dam     PO    FS GP HA UU
+#   PO 0.000 0.000  0  0  0
+#   FS 0.000 0.000  0  0  0
+#   GP 0.275 0.304  0  0  0
+#   HA 0.416 0.005  0  0  0
+#   UU 0.000 0.000  0  0  0
+```
+
+Then `pair_TopRel` = HA_PO, but `dam_TopRel` = GP (0.275+0.304 > 0.416). 
 
 
+--------------
 
 ## Calculations
 
-For each trio, the probability of observing the offspring genotype is calculated, given the parents' genotypes and Mendelian inheritance laws, for each of the 16 possible relationships.
+For each trio, the probability of observing the offspring genotype is calculated 
+for each of the 5x5 possible trio relationships, given the parents' observed genotypes, the presumed genotyping error rate, and Mendelian inheritance laws.
 
 
 ### Parent genotype
@@ -103,7 +192,10 @@ The parents actual genotype, correcting for any genotyping errors and filling in
   
 The actual genotype probabilities are scaled to sum to one at each locus. 
 
-Note that this differs from the approach in sequoia, where a parent's parents' genotypes contribute to the probability. Here this is omitted, as otherwise an incorrect grandparent will confuse the interpretation of results. 
+Note that this differs from the approach in sequoia, where a parent's parents' genotypes contribute to the probability. The benefits of this are increased speed and no confusing consequences of an incorrect grandparent. The downside is that if a parent has a 
+low call rate or some genotyping errors, the parent's parents' genotypes are not 
+there to improve the estimate of the actual genotype. 
+
 
 
 ### Scaling
@@ -111,44 +203,17 @@ Note that this differs from the approach in sequoia, where a parent's parents' g
 Following Bayes' theorem, the probability of a relationship $R$ given the genetic data $G$ can be calculated from the probability of $G$ given $R$ as 
 
 $$ P(R|G) = \frac{P(G|R)}{P(G)}P(R) $$
-Where $P(G)$ is the probability of observing the data ignoring the relationship, which for simplicity can be approximated by the probability if both parents where unrelated, $P(G) \approx P(G|UU)$. 
+Where $P(G)$ is the probability of observing the data ignoring any relationships, which for simplicity can be approximated by the probability if both parents where unrelated, $P(G) \approx P(G|UU)$. 
 
-The non-genetic probability of the relationship $P(R)$ includes in `sequoia` the age-difference based probability. Here, it is merely a scaling factor to ensure that $\sum_{R} P(R|G)=1$. 
-
-
+The non-genetic probability of the relationship $P(R)$ includes in `sequoia` the age-difference based probability. Here, it is merely a scaling factor to ensure that $\sum_{R \in \{PO,FS,GP,HA,UU\}} P(R|G)=1$ (for a given combination of genotypes $G$, the probabilities of all considered relationships $R$ sums to one). 
 
 
-## Output from Fortran part
 
-The output consists of the the trios in the pedigree file, with 19 or 24 added columns:
-
- - OH_\<parent1>, OH_\<parent2>: the count of opposing homozygous SNPs between the focal (offspring) individual and <parent1>, and between the focal individual and \<parent2>. \<parent1> and \<parent2> are the column names of the 2nd and 3rd column in the input file. Missing value = -9
- - ME_pair: number of Mendelian Errors between the focal individual and the parent pair. Missing value = -9
- - prob_PO_PO : the probability that both the dam and the sire have a Parent-Offspring relationship with the focal individual. Missing value = 999.0000
-- prob_.._.. : as for prob_PO_PO, where the first abbreviation denotes \<parent1> and the second \<parent2>, and 
-
-    - PO = parent - offspring
-    - FS = full siblings (if not `--noFS`)      
-    - GP = grandparent or full avuncular
-    - HA = half avuncular or other 3rd degree relationship
-    - UU = unrelated.
-
-
-With option `--LLR`  log10-likelihoods (LL) are returned instead of probabilities, scaled for each trio by the LL that both parents are Unrelated, i.e. results are not scaled by $P(R)$. 
-
-
-### Read output into R
-
-To deal with the special missing values code, use the `na.strings` option of `read.table()`:
-
-```{r, eval=FALSE}
-PedOUT <- read.table('Pedigree_OUT.txt', header=TRUE,
-                     na.strings=c('NA', '-9', '999.0000', 'NaN'))
-```
-
+--------------
 
 ## Disclaimer
 
-This is a beta version. 
-
 While every effort has been made to ensure that this program provides what it claims to do, there is absolutely no guarantee that the results provided are correct. Use is entirely at your own risk.
+
+
+--------------
