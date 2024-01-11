@@ -1,6 +1,6 @@
 
 # "Manual for `pedigree_checker.f90`"
-## "A fortran program to check consistency between pedigree and SNP data"
+### "A fortran program to check consistency between pedigree and SNP data"
 
 
 ## Description
@@ -179,8 +179,8 @@ there to improve the estimate of the actual genotype.
 
 Following Bayes' theorem, the probability of a relationship $R$ given the genetic data $G$ can be calculated from the probability of $G$ given $R$ as 
 
-$$ P(R|G) = \frac{P(G|R)}{P(G)}P(R) $$
-Where $P(G)$ is the probability of observing the data ignoring any relationships, which for simplicity can be approximated by the probability if both parents where unrelated, $P(G) \approx P(G|UU)$. 
+$P(R|G) = \frac{P(G|R)}{P(G)}P(R)$
+where $P(G)$ is the probability of observing the data ignoring any relationships, which for simplicity can be approximated by the probability if both parents where unrelated, $P(G) \approx P(G|UU)$. 
 
 The non-genetic probability of the relationship $P(R)$ includes in `sequoia` the age-difference based probability. Here, it is merely a scaling factor to ensure that $\sum_{R \in \{PO,FS,GP,HA,UU\}} P(R|G)=1$ (for a given combination of genotypes $G$, the probabilities of all considered relationships $R$ sums to one). 
 
