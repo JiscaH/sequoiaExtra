@@ -101,7 +101,7 @@ higher or lower than the `lower` threshold, giving four different
 possibilities as illustrated as A–D in the figure (grey = selected pairs
 written to the output).
 
-<img src="grm_tool_manual_files/figure-gfm/filter_illustration-1.png" width="60%" />
+<img src="filter_illustration-1.png" width="60%" />
 
 #### Infinity
 
