@@ -53,8 +53,14 @@ The summary output currently looks as follows:
              subset       diagonal             11         495.18       1.001152       1.155578       1.077955       0.043230              0              0             11              0
              subset        between           2134         490.32      -0.199109       0.589298      -0.006551       0.085294              0           2134              0              0
 
+where
+
+- total: in the full GRM
+- subset: among members of the `--only` list, and unless `--only-among`
+  also between members of the subset and all other individuals
+
 When the program is run without `--only`, the ‘subset’ rows are omitted,
-and the columns are identical.
+but the columns are identical.
 
 The count thresholds can be changed easily (search for ‘sumstats_counts’
 in the source code); do not forget to also change the output column
