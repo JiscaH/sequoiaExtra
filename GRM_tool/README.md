@@ -41,40 +41,27 @@ gfortran by another compiler of your choice)
 ### Summary statistics
 
 Currently, the only command line options are to turn calculation off
-(`--no-summary`) and to specify the outfile (`--summary-out`).
+(`--no-summary`) and to specify the outfile (`--summary-out`). Turning
+the calculation off potentially allows filtering of GRMs with more
+individuals, see section ‘Method’.
 
-Turning the calculation off potentially allows filtering of GRMs with
-more individuals, see section ‘Method’.
+The summary output currently looks as follows:
 
-The code to calculate the summary statistics looks (similar to) as
-follows:
+              Group           Part        N_pairs         N_SNPs   minimum        maximum        mean           std_dev        count_<-0.5    count_<0.625   count_>0.875   count_>1.25 
+              total       diagonal            200         495.07       0.796882       1.265416       0.984194       0.077524              0              0            189              1
+              total        between          19900         490.21      -0.221723       0.756767      -0.004994       0.101081              0          19892              0              0
+             subset       diagonal             11         495.18       1.001152       1.155578       1.077955       0.043230              0              0             11              0
+             subset        between           2134         490.32      -0.199109       0.589298      -0.006551       0.085294              0           2134              0              0
 
-``` fortran
-  write(42,*)  'min_R     ',  MINVAL(GRM)
-  write(42,*)  'max_R     ',  MAXVAL(GRM)
-  write(42,*)  'mean_diag ',  SUM(GRM, MASK=IsDiagonal)/COUNT(IsDiagonal)
-  write(42,*)  'sd_diag   ',  SD(GRM, MASK=IsDiagonal)   ! function defined in module Fun
-  write(42,*)  'mean_betw ',  SUM(GRM, MASK=(.not. IsDiagonal))/COUNT(.not. IsDiagonal)
-  write(42,*)  'sd_betw   ',  SD(GRM, MASK=(.not. IsDiagonal)) 
-  write(42,*)  'count_1.5_diag ',  COUNT(GRM > 1.5 .and. IsDiagonal)
-  write(42,*)  'count_5_diag   ',  COUNT(GRM > 5 .and. IsDiagonal)
-  write(42,*)  'count_0.75_betw ', COUNT(GRM > 0.75 .and. .not. IsDiagonal)
-  write(42,*)  'count_1.5_betw ',  COUNT(GRM > 1.5 .and. .not. IsDiagonal)
-```
+When the program is run without `--only`, the ‘subset’ rows are omitted,
+and the columns are identical.
 
-and additional commands can be added here relatively safely. The syntax
-is as follows:
-
-- `write(42,*)` : command to write to unit=42; this ‘unit’ is opened
-  with a specified file name before all write statements, and is closed
-  after the last write statement.
-- a text label, between quotes, written verbatim to the output file
-- a comma, separating the text label from the next item to write on that
-  line. Multiple items may be written to each line, each separated by a
-  comma; they will be tab-delimited in the output
-- a Fortran command to calculate the specific summary statistic. ‘GRM’
-  is the vector with R values, and ‘IsDiagonal’ an equally long vector
-  denoting if this value is on the diagonal of the matrix or not.
+The count thresholds can be changed easily (search for ‘sumstats_counts’
+in the source code); do not forget to also change the output column
+header accordingly, via ‘sumstat_lbls’. Adding more summary statistics
+is also quite straight forward; please contact me for assistance if you
+are not familiar (enough) with Fortran to make the necessary edits
+yourself.
 
 ### Filtering
 
@@ -101,7 +88,7 @@ higher or lower than the `lower` threshold, giving four different
 possibilities as illustrated as A–D in the figure (grey = selected pairs
 written to the output).
 
-<img src="filter_illustration-1.png" width="60%" />
+<img src="grm_tool_manual_files/figure-gfm/filter_illustration-1.png" width="60%" />
 
 #### Infinity
 
@@ -117,13 +104,6 @@ write(42,*)  'count_inf ',  COUNT(GRM >= HUGE(0D0))
 
 If this is an issue, please let me know as it would be fairly
 straightforward to change.
-
-#### with `--only`
-
-Currently the summary statistics include only those individuals where
-either or both individuals are on the `--only` list. A planned future
-upgrade is to return two summaries (and two sets of histograms): one for
-the full dataset, and one for the `--only` subset.
 
 ### Histogram
 
@@ -172,6 +152,24 @@ HH <- list(breaks = c(H$lower_bound,
 class(HH) <- 'histogram'
 plot(HH, xlim=c(0, 1.3))
 ```
+
+#### with `--only`
+
+When the program is run with `--only`, the output file contains the
+following columns:
+
+- lower_bound: lower bound of the histogram bin
+- total_diagonal: counts on the diagonal of the full GRM
+- total_between: counts off-diagonal of the full GRM
+- subset_diagonal: counts on the diagonal within the subset
+- subset_between: counts off-diagonal, between members of the subset and
+  unless `--only-among` also between members of the subset and all other
+  individuals
+
+Currently the summary statistics include only those individuals where
+either or both individuals are on the `--only` list. A planned future
+upgrade is to return two summaries (and two sets of histograms): one for
+the full dataset, and one for the `--only` subset.
 
 ## Method
 

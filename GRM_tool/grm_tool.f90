@@ -23,15 +23,26 @@
 ! debug: gfortran -Wall -pedantic -fbounds-check -g -Og grm_tool.f90 -o grmtool
 
 !===============================================================================
-module Fun
+module Global_vars
   implicit none
-
+  
   integer, parameter :: nchar_filename = 2000, nchar_ID = 40
   integer,parameter :: ik10 = selected_int_kind(10)
-  double precision, parameter :: missing = -999D0
-  integer :: nInd
+  integer(kind=ik10) :: nrows_grm
+  integer, allocatable :: nSnp(:), indx(:,:)
   character(len=nchar_ID), allocatable :: ID(:)
-  logical, allocatable :: skip(:)
+  logical :: DoSummary, DoFilter(2), OnlyAmong, quiet
+  logical, allocatable :: skip(:), IsDiagonal(:), InSubset(:)
+  double precision :: lowr_d, upr_d, lowr_b, upr_b
+  double precision, allocatable :: GRM(:)
+  
+end module Global_vars
+
+!===============================================================================
+
+module Fun
+  use Global_vars
+  implicit none
 
   contains
   
@@ -40,21 +51,23 @@ module Fun
     print '(a, /)', ' ~~ Calculate summary statistics and/or filter pairs from (very) large GRMs ~~'
     print '(a, /)', 'command-line options:'
     print '(a)',    '  --help         print usage information and exit'
-    print '(a)',    '  --in <file>    input file with GRM; extensions .grm.id and .grm.gz are added' 
+    print '(a)',    '  --in <grmfile>    input file with GRM; extensions .grm.id and .grm.gz are added' 
+    print '(a)',    '  --out_prefix <file>  prefix for output files; defaults to <grmfile> '    
     print '(a)',    '  --summary-out <file>  output file for summary statistics, default: ', &
-                    '                    grm_summary_stats.txt ' 
+                    '                    <grmfile>_summary_stats.txt ' 
    print '(a)',    '   --no-summary   do not calculate various summary statistics, e.g. when GRM is ', &
                     '                    too large to fit in memory. See/adjust the calculated ', &
                     '                    statistics on line 351-364 of the source code'
     print '(a)',    '  --hist <f,l,s> counts per histogram bin, separated into diagonal and between ',&
                     '                    (off-diagonal). First, Last, and Step are optional arguments',&
                     '                    and default to -1.5, +2.0, and 0.05'
-    print '(a)',    '  --hist-out <file>  output file for histogram counts, defaults to hist_counts.txt'
+    print '(a)',    '  --hist-out <file>  output file for histogram counts, defaults to <grmfile>_hist_counts.txt'
     print '(a)',    '  --diag-lower   lower bound of R value of exported individuals (on diagonal)'
     print '(a)',    '  --diag-upper   upper bound of R value of exported individuals (on diagonal)'
     print '(a)',    '  --betw-lower   lower bound of R value between exported pairs (off-diagonal)'
     print '(a)',    '  --betw-upper   upper bound of R value between exported pairs (off-diagonal)'
-    print '(a)',    '  --filter-out <file>  output file with pairs under lower / above upper threshold'
+    print '(a)',    '  --filter-out <file>  output file with pairs under lower / above upper threshold,'&
+                    '                    defaults to <grmfile>_filter_output.txt'
     print '(a)',    '  --only <file>  only consider pairs with one or both individuals listed,',&
                     '                    IDs in first/single column or columns FID (ignored) + IID'
     print '(a)',    '  --only-among <file>  only consider pairs with both individuals listed'
@@ -149,9 +162,9 @@ module Fun
     integer :: n
     double precision :: mean
     
-    n = count(mask .and. x/=missing)   ! size(x)
-    mean = sum(x, mask=mask .and. x/=missing)/n
-    SD = sqrt(sum((x - mean)**2, mask=mask .and. x/=missing)/n)
+    n = count(mask)   ! size(x)
+    mean = sum(x, mask=mask)/n
+    SD = sqrt(sum((x - mean)**2, mask=mask)/n)
 
   end function SD
   
@@ -189,31 +202,33 @@ end module Fun
 !===============================================================================
 
 module histogram
-  Use Fun, ONLY: missing, ik10
+  use Global_vars, ONLY: ik10, GRM
   implicit none
 
   contains
   ! counts per bin (histogram)
-  function hist(V, MASK, breaks)
-    double precision, intent(IN) :: V(:), breaks(:)
+  function grm_hist(MASK, breaks)
+    double precision, intent(IN) :: breaks(:)
     logical, intent(IN) :: MASK(:)
-    integer, allocatable ::  hist(:)
+    integer(kind=ik10), allocatable ::  grm_hist(:)
     integer :: nBins, b
     
     nBins = SIZE(breaks) -1
     
-    if (any(V <= breaks(1) .and. V/=missing)) print *, 'hist() WARNING: some data <= first'
-    if (any(V > breaks(nBins)))   print *, 'hist() WARNING: some data > last'
+    if (any(GRM <= breaks(1))) print *, 'hist() WARNING: some data <= first'
+    if (any(GRM > breaks(nBins)))   print *, 'hist() WARNING: some data > last'
     
-    allocate(hist(nBins))
-    hist = 0  
+    allocate(grm_hist(nBins))
+    grm_hist = 0  
     do b=1, nBins
-      hist(b) = COUNT(V > breaks(b) .and. V <= breaks(b+1) .and. MASK .and. V/=missing) 
+      grm_hist(b) = COUNT(GRM > breaks(b) .and. GRM <= breaks(b+1) .and. MASK) 
     enddo
 
  !   deallocate(hist)  DO NOT DEALLOCATE
     
-  end function hist
+  end function grm_hist
+  
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   
   function breaks(first, last, step)
     double precision, intent(IN) :: first, last, step 
@@ -228,35 +243,6 @@ module histogram
     enddo
   
   end function breaks
-  
-  
-  subroutine writeHists(V, N, hist_brks, IsDiag, FileName)
-    integer(kind=ik10), intent(IN) :: N
-    double precision, intent(IN) :: V(N)
-    logical, intent(IN) :: IsDiag(N)
-    double precision, intent(IN) :: hist_brks(:)
-    character(len=*), intent(IN) :: FileName
-    integer :: nBins, x
-    integer, allocatable :: hist_counts_diag(:), hist_counts_betw(:)
-      
-    nBins = size(hist_brks) -1
-    allocate(hist_counts_diag(nBins))
-    allocate(hist_counts_betw(nBins))
-        
-    hist_counts_diag  = hist(V, MASK=IsDiag .and. V/=missing, breaks=hist_brks)
-    hist_counts_betw = hist(V, MASK= .not. IsDiag .and. V/=missing, breaks=hist_brks)
-    open(101, file=trim(FileName), action='write')
-      write(101, '(a12, 2a20)')  'lower_bound', 'diagonal', 'between'
-      do x=1, SIZE(hist_brks)-1
-        write(101, '(f12.4, 2i20)')  hist_brks(x), hist_counts_diag(x), hist_counts_betw(x)
-      enddo
-    close(101)
-
-    deallocate(hist_counts_diag)
-    deallocate(hist_counts_betw)
-
-  end subroutine writeHists
-
 
 end module histogram
 
@@ -267,16 +253,16 @@ program main
   use histogram
   implicit none
    
-  integer :: x, i,j, z, n, ios, nArg, p
-  integer(kind=ik10) :: nrows_grm, print_chunk, timing_y, y
-  double precision :: r, lowr_d, upr_d, lowr_b, upr_b, CurrentTime(2), hist_opts(3)
+  integer :: x, i,j, nArg, nInd, nBins
+  double precision :: hist_opts(3)
   character(len=32) :: arg, argOption
   character(len=2) :: chk
-  character(len=nchar_filename) :: grmFile, filterFile, summaryFile, onlyFile, histFile
-  logical :: FileExists, quiet, DoHist, DoSummary, DoFilter(2), OnlyAmong, WritePair
-  double precision, allocatable :: GRM(:), hist_brks(:)
-  integer, allocatable :: indx(:,:), nSnp(:)
-  logical, allocatable :: IsDiagonal(:)
+  character(len=15) :: sumstat_lbls(8)
+  character(len=nchar_filename) :: grmFile, filterFile, summaryFile, onlyFile, histFile, outPrefix
+  logical :: FileExists, DoHist
+  logical, allocatable :: hist_mask(:), sum_mask(:)
+  double precision, allocatable :: hist_brks(:)
+  integer(kind=ik10), allocatable :: hist_counts(:,:)
   
   write(*,*) ''
   write(*,*) REPEAT('~',24)
@@ -287,10 +273,12 @@ program main
   
   ! set default values
   grmFile = 'nofile'
-  summaryFile = 'grm_summary_stats.txt'
-  filterFile = 'grm_filter_output.txt'
-  histFile = 'hist_counts.txt'
+  outPrefix = grmFile
   onlyFile = 'nofile'
+  summaryFile = 'default'
+  filterFile = 'default'
+  histFile = 'default'
+  
   OnlyAmong = .FALSE.
   DoSummary = .TRUE.
   DoFilter = .FALSE.
@@ -321,6 +309,10 @@ program main
       case ('--in')
         i = i+1
         call get_command_argument(i, grmFile)
+        
+      case ('--out-prefix')
+        i = i+1
+        call get_command_argument(i, outPrefix)
         
       case ('--summary-out')
         i = i+1
@@ -408,6 +400,13 @@ program main
 
     end select
   enddo        
+  
+  if (trim(outPrefix) == 'nofile') then
+    outPrefix = grmFile
+  endif
+  if (trim(summaryFile)=='default')  summaryFile = trim(outPrefix)//'_summary_stats.txt'
+  if (trim(filterFile)=='default')  filterFile = trim(outPrefix)//'_filter_output.txt'
+  if (trim(histFile)=='default')  histFile = trim(outPrefix)//'_hist_counts.txt'
   
   ! input check ------
   if (grmFile == 'nofile') then
@@ -501,13 +500,15 @@ program main
 
   if (DoSummary) then
     allocate(GRM(nrows_grm))
-    GRM = missing
+    GRM = -999D0
     allocate(indx(2, nrows_grm))
     indx = 0
     allocate(nSnp(nrows_grm))
     nSnp = 0
     allocate(IsDiagonal(nrows_grm))
     IsDiagonal = .FALSE.  
+    allocate(InSubset(nrows_grm))
+    InSubset = .TRUE.
   endif
     
   
@@ -517,12 +518,150 @@ program main
     if (.not. quiet) then
       call printt("Reading individuals in --only file "//trim(onlyFile)//" ... ")
     endif
-    call ReadOnlyList(onlyFile, quiet)
+    call ReadOnlyList(onlyFile)
   else
     skip = .FALSE.
   endif
 
-  ! create & open named pipe with data from .grm.gz
+  ! read in GRM & filter
+  call ReadFilterGRM(grmFile, filterFile)
+ 
+  
+  ! calculate & write summary statistics
+  if (DoSummary) then
+    sumstat_lbls(1) = 'minimum'
+    sumstat_lbls(2) = 'maximum'
+    sumstat_lbls(3) = 'mean'
+    sumstat_lbls(4) = 'std_dev'
+    sumstat_lbls(5) = 'count_<-0.5'
+    sumstat_lbls(6) = 'count_<0.625'
+    sumstat_lbls(7) = 'count_>0.875'
+    sumstat_lbls(8) = 'count_>1.25'   ! TODO: check if labels read in OK by R  
+
+    allocate(sum_mask(nrows_grm))
+  
+    open(42, file=trim(summaryfile), action='write')
+!     write(42,*)  'grmFile   ',  trim(grmFile)
+!      write(42,*)  'OnlyFile  ',  trim(onlyFile)
+      write(42,'(4a15, 20(3x,a12))') 'Group', 'Part', 'N_pairs', 'N_SNPs', sumstat_lbls
+      sum_mask = IsDiagonal
+      write(42, '(2a15, i15, f15.2, 4f15.6, 4i15)') 'total', 'diagonal', &
+        COUNT(sum_mask), mean_SNPs(sum_mask), sumstats(sum_mask), sumstats_counts(sum_mask)
+      sum_mask = .not. IsDiagonal
+      write(42, '(2a15, i15, f15.2, 4f15.6, 4i15)') 'total', 'between', &
+        COUNT(sum_mask), mean_SNPs(sum_mask), sumstats(sum_mask), sumstats_counts(sum_mask)
+      if (any(skip)) then 
+        sum_mask = IsDiagonal .and. InSubset
+        write(42, '(2a15, i15, f15.2, 4f15.6, 4i15)') 'subset', 'diagonal', &
+          COUNT(sum_mask), mean_SNPs(sum_mask), sumstats(sum_mask), sumstats_counts(sum_mask)
+        sum_mask = .not. IsDiagonal .and. InSubset
+        write(42, '(2a15, i15, f15.2, 4f15.6, 4i15)') 'subset', 'between', &
+          COUNT(sum_mask), mean_SNPs(sum_mask), sumstats(sum_mask), sumstats_counts(sum_mask) 
+      endif
+    close(42)
+    if (.not. quiet) then
+      call printt("summary statistics written to "//trim(summaryfile))
+    endif
+    deallocate(sum_mask)
+  endif
+  
+  
+  if (DoHist) then   
+    hist_brks = breaks(first=hist_opts(1), last=hist_opts(2), step=hist_opts(3))
+    nBins = size(hist_brks) -1
+    if (any(skip)) then
+      allocate(hist_counts(nBins,4))
+    else
+      allocate(hist_counts(nBins,2))
+    endif
+    allocate(hist_mask(nrows_GRM))
+    
+    hist_mask = IsDiagonal
+    hist_counts(:,1) = grm_hist(MASK=hist_mask, breaks=hist_brks)
+    hist_mask = .not. IsDiagonal
+    hist_counts(:,2) = grm_hist(MASK=hist_mask, breaks=hist_brks)
+    if (any(skip)) then
+      hist_mask = IsDiagonal .and. InSubset
+      hist_counts(:,3) = grm_hist(MASK=hist_mask, breaks=hist_brks)
+      hist_mask = .not. IsDiagonal .and. InSubset
+      hist_counts(:,4) = grm_hist(MASK=hist_mask, breaks=hist_brks)
+    endif
+    
+    open(101, file=trim(histFile), action='write')
+      if (any(skip)) then
+        write(101, '(a12, 4a25)')  'lower_bound', 'total_diagonal', 'total_between', &
+          'subset_diagonal', 'subset_between'
+      else
+        write(101, '(a12, 2a25)')  'lower_bound', 'diagonal', 'between'
+      endif
+      do x=1, nBins
+        write(101, '(f12.4, 4i25)')  hist_brks(x), hist_counts(x,:)
+      enddo
+    close(101)
+
+    if (.not. quiet)  call printt("histogram counts written to "//trim(histFile))   
+  endif
+  
+ 
+  ! clean up
+  if (allocated(ID))    deallocate(ID)  
+  if (allocated(skip))  deallocate(skip)
+  if (allocated(GRM))   deallocate(GRM)
+  if (allocated(IsDiagonal))  deallocate(IsDiagonal)
+  if (allocated(hist_brks))   deallocate(hist_brks)
+  if (allocated(hist_mask))   deallocate(hist_mask)
+  if (allocated(nSnp))   deallocate(nSnp)
+  if (allocated(InSubset))  deallocate(InSubset)
+  
+  if (.not. quiet)  call printt('Done.')
+  
+  !=========================
+  contains
+    function mean_SNPs(MASK)
+      logical, intent(IN) :: MASK(:)
+      double precision :: mean_SNPs
+      
+      mean_SNPs = SUM(nSnp/1000D0, MASK=MASK) / COUNT(MASK=MASK) * 1000D0   ! got rounded to INF..     
+    end function mean_SNPs
+  
+    function sumstats(MASK)
+      logical, intent(IN) :: MASK(:)
+      double precision :: sumstats(4)
+      
+      sumstats(1) = MINVAL(GRM, MASK=MASK)
+      sumstats(2) = MAXVAL(GRM, MASK=MASK)
+      sumstats(3) = SUM(GRM, MASK=MASK)/COUNT(MASK=MASK)  ! mean
+      sumstats(4) = SD(GRM, MASK=MASK)   ! standard deviation; function defined in module Fun
+    end function sumstats
+
+    function sumstats_counts(MASK)
+      logical, intent(IN) :: MASK(:)
+      integer :: sumstats_counts(4)
+
+      sumstats_counts(1) = COUNT(GRM < -0.5  .and. MASK)
+      sumstats_counts(2) = COUNT(GRM < 0.625 .and. MASK)
+      sumstats_counts(3) = COUNT(GRM > 0.875 .and. MASK)
+      sumstats_counts(4) = COUNT(GRM > 1.25  .and. MASK)
+    end function sumstats_counts
+
+        
+end program main
+
+!========================================================================
+
+subroutine ReadFilterGRM(grmFile, filterFile)
+  use Global_vars
+  use Fun, ONLY: timestamp, roundit
+  implicit none
+  
+  character(len=*), intent(IN) :: grmFile, filterFile
+  integer :: n, x, p, i, j, z, ios
+  integer(kind=ik10) :: print_chunk, timing_y, y
+  logical :: WritePair
+  double precision :: r, CurrentTime(2)
+  
+  
+    ! create & open named pipe with data from .grm.gz
   ! NOTE: EXECUTE_COMMAND_LINE() is fortran 2008 standard, 
   ! and possibly not supported by ifort. 
   ! SYSTEM() is gnu extension and possibly supported by both gfortran & ifort
@@ -570,9 +709,21 @@ program main
       
       read(11, *, iostat=ios) i,j,z,r  
       if (ios/=0) exit   ! stop if end of file / incorrect entry
-      if (skip(i) .and. skip(j))  cycle 
+      if (skip(i) .and. skip(j)) then
+        if (DoSummary) then
+          InSubset(y) = .FALSE.
+        else
+          cycle 
+        endif
+      endif
       if (OnlyAmong) then
-        if (skip(i) .or. skip(j))  cycle
+        if (skip(i) .or. skip(j)) then
+          if (DoSummary) then
+            InSubset(y) = .FALSE.
+          else
+            cycle
+          endif
+        endif
       endif
       x = x+1
       if (DoSummary) then
@@ -587,7 +738,7 @@ program main
       WritePair = .FALSE.
       if (i==j .and. DoFilter(1)) then  ! diagonal
         if (upr_d > lowr_d) then
-          if (r > lowr_d .and. r < upr_d)   WritePair = .TRUE.
+          if (r > lowr_d .and. r < upr_d)  WritePair = .TRUE.
         else
           if (r > lowr_d .or. r < upr_d)   WritePair = .TRUE.
         endif
@@ -617,75 +768,28 @@ program main
   
   ! Warning if number of entries read from .grm.gz does not match number of 
   ! IDs read from .grm.id
-  if (y < (nInd * (nInd-1)/2 + nInd)) then
+  if (y < nrows_grm) then
     write(*,*)  ""
     write(*,*)  "   WARNING !!!"
     write(*,*)  "Number of entries read from "//trim(grmFile)//".grm.gz ", &
       "( ", y, " ) does not match number of individuals in ", &
-      trim(grmFile)//".grm.id ( ", nInd, " )"
+      trim(grmFile)//".grm.id ( ", size(ID), " )"
     write(*,*)  ""
   endif
   
   ! remove named pipe
   CALL EXECUTE_COMMAND_LINE("rm -f grmpipe")
   
-  
-  ! calculate & write summary statistics
-  if (DoSummary) then
-    open(42, file=trim(summaryfile), action='write')
-      write(42,*)  'grmFile   ',  trim(grmFile)
-      write(42,*)  'OnlyFile  ',  trim(onlyFile)
-      write(42,*)  'N_total   ',  nInd
-      write(42,*)  'N_only    ',  x
-      write(42,*)  'mean_SNPs ',  SUM(nSnp/1000D0) / x * 1000D0   ! got rounded to INF..
-      write(42,*)  'min_R     ',  MINVAL(GRM, MASK=GRM/=MISSING)
-      write(42,*)  'max_R     ',  MAXVAL(GRM, MASK=GRM/=MISSING)
-      write(42,*)  'mean_diag ',  SUM(GRM, MASK=IsDiagonal .and. GRM/=MISSING)/COUNT(IsDiagonal .and. GRM/=MISSING)
-      write(42,*)  'sd_diag   ',  SD(GRM, MASK=IsDiagonal .and. GRM/=MISSING)   ! function defined in module Fun
-      write(42,*)  'mean_betw ',  SUM(GRM, MASK=(.not. IsDiagonal .and. GRM/=MISSING))/COUNT(.not. IsDiagonal .and. GRM/=MISSING)
-      write(42,*)  'sd_betw   ',  SD(GRM, MASK=(.not. IsDiagonal .and. GRM/=MISSING)) 
-      write(42,*)  'count_1.5_diag ',  COUNT(GRM > 1.5 .and. IsDiagonal .and. GRM/=MISSING)
-      write(42,*)  'count_5_diag   ',  COUNT(GRM > 5 .and. IsDiagonal .and. GRM/=MISSING)
-      write(42,*)  'count_0.75_betw ', COUNT(GRM > 0.75 .and. .not. IsDiagonal .and. GRM/=MISSING)
-      write(42,*)  'count_1.5_betw ',  COUNT(GRM > 1.5 .and. .not. IsDiagonal .and. GRM/=MISSING)
-    close(42)
-    if (.not. quiet) then
-      call printt("summary statistics written to "//trim(summaryfile))
-    endif
-  endif
-  
-  
-  if (DoHist) then
-  
-    hist_brks = breaks(first=hist_opts(1), last=hist_opts(2), step=hist_opts(3))
-    call writeHists(V=GRM, N=nrows_grm, hist_brks=hist_brks, IsDiag=IsDiagonal, FileName=trim(histFile))
-    if (.not. quiet) then
-      call printt("histogram counts written to "//trim(histFile))
-    endif
-  endif
-  
- 
-  ! clean up
-  if (allocated(ID))    deallocate(ID)  
-  if (allocated(skip))  deallocate(skip)
-  if (allocated(GRM))   deallocate(GRM)
-  if (allocated(IsDiagonal))  deallocate(IsDiagonal)
-  if (allocated(hist_brks))   deallocate(hist_brks)
-  if (allocated(nSnp))   deallocate(nSnp)
-  
-  if (.not. quiet)  call printt('Done.')
-        
-end program main
-
+end subroutine ReadFilterGRM
 
 !===============================================================================
 
-subroutine ReadOnlyList(FileName, quiet)
+subroutine ReadOnlyList(FileName)
+  use Global_vars, ONLY: Id, skip
   use Fun
   implicit none
 
   character(len=nchar_filename), intent(IN) :: FileName
-  logical, intent(IN) :: quiet
   integer :: x, i, nrows, IOerr, ncol
   character(len=nchar_ID) :: tmpC, tmpX
 
@@ -717,7 +821,7 @@ subroutine ReadOnlyList(FileName, quiet)
       else if (IOerr < 0) then
         exit   ! EOF
       else
-        do i=1, nInd
+        do i=1, size(Id)
           if (Id(i) == tmpC) skip(i) = .FALSE.
         enddo
       endif
@@ -732,4 +836,5 @@ subroutine ReadOnlyList(FileName, quiet)
 end subroutine ReadOnlyList
 
 !===============================================================================
+
 ! end.
