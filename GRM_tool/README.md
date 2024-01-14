@@ -1,5 +1,8 @@
 # Manual for `grm_tool.f90`
+
 ### A fortran program to summarise and filter GRMs
+
+Jisca Huisman, 2024-01-14
 
 ## Description
 
@@ -7,8 +10,6 @@ This program can calculate various summary statistics from (potentially
 huge) GRMs, and/or filter out pairs with R values above or below a
 specified threshold. Additional functionality may be added in the
 future.
-
- 
 
 ## Preparations
 
@@ -22,20 +23,18 @@ future.
 Run `gfortran -O3 grm_tool.f90 -o grm_tool` (where you may substitute
 gfortran by another compiler of your choice)
 
- 
-
 ## Input files
 
 - `--in` : input file pair with GRM, as returned by
   `plink --make-grm-gz` or `gcta --make-grm`. Extensions .grm.id and
   .grm.gz are added.
 - `--only` : individual subset, only pairs where either individual is
-  listed are considered. Text file with a single column with IDs, no
-  header row.
+  listed are considered. A text file with no header, and either two
+  columns with IDs in the second column (same format as for
+  `plink --keep`), or a single column with IDs (any additional columns
+  are ignored if there are \>2 columns).
 - `-only-among` : as `--only`, but only pairs where *both* individuals
   are listed are considered. grm
-
- 
 
 ## Program options
 
@@ -104,6 +103,8 @@ written to the output).
 
 <img src="grm_tool_manual_files/figure-gfm/filter_illustration-1.png" width="60%" />
 
+#### Infinity
+
 NOTE: Filtering will currently ignore any values of `+Inf` or `-Inf`, as
 the thresholds do not default to infinity but to ‘HUGE(0D0)’, which is
 the largest ‘double precision’ value that Fortran can store. Whether
@@ -116,6 +117,13 @@ write(42,*)  'count_inf ',  COUNT(GRM >= HUGE(0D0))
 
 If this is an issue, please let me know as it would be fairly
 straightforward to change.
+
+#### with `--only`
+
+Currently the summary statistics include only those individuals where
+either or both individuals are on the `--only` list. A planned future
+upgrade is to return two summaries (and two sets of histograms): one for
+the full dataset, and one for the `--only` subset.
 
 ### Histogram
 
@@ -165,8 +173,6 @@ class(HH) <- 'histogram'
 plot(HH, xlim=c(0, 1.3))
 ```
 
- 
-
 ## Method
 
 The compressed .grm.gz file is decompressed and processed as a
@@ -185,7 +191,13 @@ depending on the thresholds used. For the summary statistics and
 `--hist` all R values are (currently) stored, which may be a very large
 vector.
 
- 
+The program currently uses gzip for decompression, but this can easily
+be changed by changing `gzip` to e.g. `pigz` at the following line in
+the source code:
+
+``` fortran
+call EXECUTE_COMMAND_LINE("(gzip -dc  "//trim(grmFile)//".grm.gz > grmpipe) &")
+```
 
 ## Example data
 
@@ -194,9 +206,3 @@ setting. The files ‘griffin.grm.gz’ and ‘griffin.grm.id’ contain a GRM
 generated from SNP data simulated from ‘Ped_griffin’ in the sequoia R
 package. It includes 200 individuals, including 2 inbred pairs
 (R\>0.75).
-
-
-## Disclaimer
-
-While every effort has been made to ensure that this program provides what it claims to do, there is absolutely no guarantee that the results provided are correct. Use is entirely at your own risk.
- 
