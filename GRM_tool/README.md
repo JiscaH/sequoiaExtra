@@ -69,6 +69,10 @@ is also quite straight forward; please contact me for assistance if you
 are not familiar (enough) with Fortran to make the necessary edits
 yourself.
 
+Note that when reading this file into R, its default behaviour is to
+change the ‘\<’, ‘\>’ and ‘-’ in the column names into a dot. To prevent
+this, use `read.table(file, header=TRUE, check.names=FALSE)`.
+
 ### Filtering
 
 A subset of the GRM can be written to a text file based on their R
@@ -191,9 +195,15 @@ For the filtering, the data is taken from the stream, checked against
 the specified thresholds, written to file (or not), and discarded. The
 amount of computer memory required by the program does thus not increase
 with the size of the GRM, although the output file may get very large
-depending on the thresholds used. For the summary statistics and
-`--hist` all R values are (currently) stored, which may be a very large
-vector.
+depending on the thresholds used.
+
+For the summary statistics and `--hist`, after 5%, 10%, …, of the data
+is read in, summary statistics are calculated and memory space reused
+for the next 5% of data. After all data are processed, the
+sum/min/max/mean is calculated over the 21 data chunks (20 equal sized +
+left overs). For the standard deviation, the ‘extension to K groups’ at
+<https://stats.stackexchange.com/questions/55999/is-it-possible-to-find-the-combined-standard-deviation?noredirect=1&lq=1>
+is used.
 
 The program currently uses gzip for decompression, but this can easily
 be changed by changing `gzip` to e.g. `pigz` at the following line in

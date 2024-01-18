@@ -26,27 +26,22 @@
 module Global_vars
   implicit none
   
-  integer, parameter :: nchar_filename = 2000, nchar_ID = 40
-  integer,parameter :: ik10 = selected_int_kind(10)
-  integer(kind=ik10) :: nrows_grm
+  integer, parameter :: nchar_filename = 2000, nchar_ID = 40, Nchunks = 20
+  integer, parameter :: ik10 = selected_int_kind(10)
+  integer(kind=ik10) :: nrows_grm, N_pairs_chunk(Nchunks+1,4), counts_chunk(4,Nchunks+1,4)
   integer, allocatable :: nSnp(:), indx(:,:)
+  integer(kind=ik10), allocatable :: hist_chunk(:,:,:)
+  integer :: nBins
   character(len=nchar_ID), allocatable :: ID(:)
-  logical :: DoSummary, DoFilter(2), OnlyAmong, quiet
+  logical :: DoSummary, DoFilter(2), DoHist, OnlyAmong, quiet
   logical, allocatable :: skip(:), IsDiagonal(:), InSubset(:)
-  double precision :: lowr_d, upr_d, lowr_b, upr_b
-  double precision, allocatable :: GRM(:)
+  double precision :: lowr_d, upr_d, lowr_b, upr_b, &
+    mean_SNPs_chunk(Nchunks+1,4), stats_chunk(4,Nchunks+1,4) 
+  double precision, allocatable :: GRM(:), hist_brks(:)
   
-end module Global_vars
-
-!===============================================================================
-
-module Fun
-  use Global_vars
-  implicit none
-
+  
   contains
-  
-  ! option documentation
+    ! option documentation
   subroutine print_help()
     print '(a, /)', ' ~~ Calculate summary statistics and/or filter pairs from (very) large GRMs ~~'
     print '(a, /)', 'command-line options:'
@@ -74,7 +69,171 @@ module Fun
     print '(a)',    '  --quiet        hide messages'
     print '(a)',    ''
   end subroutine print_help
+  
+  
+end module Global_vars
+
+!===============================================================================
+
+module stats_fun
+  use Global_vars, ONLY: ik10
+  implicit none
+
+  contains
+  
+  ! round number x to d significant digits
+  integer function roundit(x,d)
+    double precision, intent(IN) :: x
+    integer, intent(IN) :: d
+    double precision :: z
+    integer :: i
     
+    z = x
+    i = 0
+    do
+      i = i+1
+      z = z/10.0
+      if (z < 10**d)  exit
+    enddo
+  
+    roundit = NINT(z) * 10**i
+      
+  end function roundit 
+  
+  ! calculate mean
+  double precision function mean(x, mask)
+    double precision, intent(IN) :: x(:)
+    logical, intent(IN), optional :: mask(:)
+    integer(kind=ik10) :: n
+    
+    if (present(mask)) then
+      n = count(mask, kind=ik10)
+      mean = sum(x, mask=mask)/n
+    else
+      n = size(x)
+      mean = sum(x)/n
+    endif
+  
+  end function mean
+  
+  ! calculate standard deviation
+  double precision function SD(x, mask)
+    double precision, intent(IN) :: x(:)
+    logical, intent(IN), optional :: mask(:)
+    integer(kind=ik10) :: n
+    
+    if (present(mask)) then
+      n = count(mask, kind=ik10)   
+      SD = sqrt(sum((x - mean(x,mask))**2, mask=mask)/(n-1))
+    else
+      n = size(x)
+      SD = sqrt(sum((x - mean(x))**2)/(n-1))
+    endif
+    if (n==1)  SD=0D0
+
+  end function SD
+  
+  ! weighed mean
+  double precision function wmean(x, n)
+    double precision, intent(IN) :: x(:)
+    integer(kind=ik10), intent(IN) :: n(:)
+
+    wmean = sum(x*n, MASK=n>0)/sum(n)
+  
+  end function wmean
+  
+  
+  ! weighed SD
+  ! https://stats.stackexchange.com/questions/55999/is-it-possible-to-find-the-combined-standard-deviation?noredirect=1&lq=1
+  double precision function wSD(s, m, n)
+    double precision, intent(IN) :: s(:), m(:)  ! per-subset SD; mean
+    integer(kind=ik10), intent(IN) :: n(:)   ! per-subset sample size
+    double precision :: m_tot
+    
+    m_tot = wmean(m,n)
+    wSD = sqrt( sum( (n-1)*s**2 + n*(m - m_tot)**2, MASK=n>0)/(sum(n) - 1) )
+  
+  end function wSD
+  
+  function breaks(first, last, step)
+    double precision, intent(IN) :: first, last, step 
+    integer :: nBins, b
+    double precision, allocatable :: breaks(:)
+    
+    nBins = NINT((last - first)/step)
+    allocate(breaks(nBins+1))
+    breaks(1) = first
+    do b=2, nBins+1
+      breaks(b) = breaks(b-1) + step
+    enddo
+  
+  end function breaks
+
+end module stats_fun
+
+!===============================================================================
+
+module GRM_fun
+  use Global_vars, ONLY: GRM, nSNP, ik10
+  use stats_fun
+  implicit none
+
+  contains
+    function mean_SNPs(MASK)
+      logical, intent(IN) :: MASK(:)
+      double precision :: mean_SNPs
+      
+      mean_SNPs = SUM(nSnp/1000D0, MASK=MASK) / COUNT(MASK=MASK, kind=ik10) * 1000D0   ! got rounded to INF..     
+    end function mean_SNPs
+  
+    function sumstats(MASK)
+      logical, intent(IN) :: MASK(:)
+      double precision :: sumstats(4)
+      
+      sumstats(1) = MINVAL(GRM, MASK=MASK)
+      sumstats(2) = MAXVAL(GRM, MASK=MASK)
+      sumstats(3) = SUM(GRM, MASK=MASK)/COUNT(MASK=MASK, kind=ik10)  ! mean
+      sumstats(4) = SD(GRM, MASK=MASK)   ! standard deviation; function defined in module Fun
+    end function sumstats
+
+    function sumstats_counts(MASK)
+      logical, intent(IN) :: MASK(:)
+      integer(kind=ik10) :: sumstats_counts(4)
+
+      sumstats_counts(1) = COUNT(GRM < -0.5  .and. MASK, kind=ik10)
+      sumstats_counts(2) = COUNT(GRM < 0.625 .and. MASK, kind=ik10)
+      sumstats_counts(3) = COUNT(GRM > 0.875 .and. MASK, kind=ik10)
+      sumstats_counts(4) = COUNT(GRM > 1.25  .and. MASK, kind=ik10)
+    end function sumstats_counts
+    
+    
+     ! counts per bin (histogram)
+    function grm_hist(MASK)
+      use Global_vars, ONLY: hist_brks, nBins
+      
+      logical, intent(IN) :: MASK(:)
+      integer(kind=ik10) :: grm_hist(nBins)
+      integer :: b
+      
+      if (any(GRM <= hist_brks(1) .and. MASK)) print *, 'hist() WARNING: some data <= first'
+      if (any(GRM > hist_brks(nBins) .and. MASK))   print *, 'hist() WARNING: some data > last'
+      
+      grm_hist = 0  
+      do b=1, nBins
+        grm_hist(b) = COUNT(GRM > hist_brks(b) .and. GRM <= hist_brks(b+1) .and. MASK, kind=ik10) 
+      enddo
+      
+    end function grm_hist 
+
+end module GRM_fun
+
+!===============================================================================
+
+module Fun
+  use Global_vars
+  implicit none
+
+  contains    
      
   ! determine number of rows in a file
   integer function FileNumRow(FileName)
@@ -135,40 +294,6 @@ module Fun
   end function FileNumCol
   
   
-  ! round number x to d significant digits
-  integer function roundit(x,d)
-    double precision, intent(IN) :: x
-    integer, intent(IN) :: d
-    double precision :: z
-    integer :: i
-    
-    z = x
-    i = 0
-    do
-      i = i+1
-      z = z/10.0
-      if (z < 10**d)  exit
-    enddo
-  
-    roundit = NINT(z) * 10**i
-      
-  end function roundit
-  
-  
-  ! calculate standard deviation
-  double precision function SD(x, mask)
-    double precision, intent(IN) :: x(:)
-    logical, intent(IN) :: mask(:)
-    integer :: n
-    double precision :: mean
-    
-    n = count(mask)   ! size(x)
-    mean = sum(x, mask=mask)/n
-    SD = sqrt(sum((x - mean)**2, mask=mask)/n)
-
-  end function SD
-  
-  
   subroutine timestamp(spaceIN)
     implicit none
     
@@ -201,67 +326,20 @@ end module Fun
 
 !===============================================================================
 
-module histogram
-  use Global_vars, ONLY: ik10, GRM
-  implicit none
-
-  contains
-  ! counts per bin (histogram)
-  function grm_hist(MASK, breaks)
-    double precision, intent(IN) :: breaks(:)
-    logical, intent(IN) :: MASK(:)
-    integer(kind=ik10), allocatable ::  grm_hist(:)
-    integer :: nBins, b
-    
-    nBins = SIZE(breaks) -1
-    
-    if (any(GRM <= breaks(1))) print *, 'hist() WARNING: some data <= first'
-    if (any(GRM > breaks(nBins)))   print *, 'hist() WARNING: some data > last'
-    
-    allocate(grm_hist(nBins))
-    grm_hist = 0  
-    do b=1, nBins
-      grm_hist(b) = COUNT(GRM > breaks(b) .and. GRM <= breaks(b+1) .and. MASK) 
-    enddo
-
- !   deallocate(hist)  DO NOT DEALLOCATE
-    
-  end function grm_hist
-  
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  
-  function breaks(first, last, step)
-    double precision, intent(IN) :: first, last, step 
-    integer :: nBins, b
-    double precision, allocatable :: breaks(:)
-    
-    nBins = NINT((last - first)/step)
-    allocate(breaks(nBins+1))
-    breaks(1) = first
-    do b=2, nBins+1
-      breaks(b) = breaks(b-1) + step
-    enddo
-  
-  end function breaks
-
-end module histogram
-
-!===============================================================================
-
 program main
   use Fun
-  use histogram
+  use stats_fun
   implicit none
    
-  integer :: x, i,j, nArg, nInd, nBins
+  integer :: x, i,j, nArg, nInd, g
   double precision :: hist_opts(3)
   character(len=32) :: arg, argOption
   character(len=2) :: chk
   character(len=15) :: sumstat_lbls(8)
+  character(len=6) :: group_lbl(4)
+  character(len=8) :: part_lbl(4)
   character(len=nchar_filename) :: grmFile, filterFile, summaryFile, onlyFile, histFile, outPrefix
-  logical :: FileExists, DoHist
-  logical, allocatable :: hist_mask(:), sum_mask(:)
-  double precision, allocatable :: hist_brks(:)
+  logical :: FileExists
   integer(kind=ik10), allocatable :: hist_counts(:,:)
   
   write(*,*) ''
@@ -493,24 +571,11 @@ program main
   
   if (nrows_grm < 0) then
     print *, '# rows exceeds current storage mode!'
-    print *, 'Increase selected_int_kind() on line 103'
+    print *, 'Increase selected_int_kind() on line 30'
     print *, ' or contact jisca.huisman@gmail.com'
     stop
   endif
 
-  if (DoSummary) then
-    allocate(GRM(nrows_grm))
-    GRM = -999D0
-    allocate(indx(2, nrows_grm))
-    indx = 0
-    allocate(nSnp(nrows_grm))
-    nSnp = 0
-    allocate(IsDiagonal(nrows_grm))
-    IsDiagonal = .FALSE.  
-    allocate(InSubset(nrows_grm))
-    InSubset = .TRUE.
-  endif
-    
   
   ! read in --only list
   allocate(skip(nInd))
@@ -522,9 +587,21 @@ program main
   else
     skip = .FALSE.
   endif
+  
+  if (DoHist) then   
+    hist_brks = breaks(first=hist_opts(1), last=hist_opts(2), step=hist_opts(3))
+    nBins = size(hist_brks)-1
+    if (any(skip)) then
+      allocate(hist_chunk(nBins,Nchunks+1,4))
+      allocate(hist_counts(nBins,4))
+    else
+      allocate(hist_chunk(nBins,Nchunks+1,2))
+      allocate(hist_counts(nBins,2))
+    endif
+  endif
 
   ! read in GRM & filter
-  call ReadFilterGRM(grmFile, filterFile)
+  call ProcessGRM(grmFile, filterFile)
  
   
   ! calculate & write summary statistics
@@ -533,59 +610,36 @@ program main
     sumstat_lbls(2) = 'maximum'
     sumstat_lbls(3) = 'mean'
     sumstat_lbls(4) = 'std_dev'
-    sumstat_lbls(5) = 'count_<-0.5'
+    sumstat_lbls(5) = 'count_<-0.5'   ! NOTE: in R use read.table(.., check.names=FALSE)
     sumstat_lbls(6) = 'count_<0.625'
     sumstat_lbls(7) = 'count_>0.875'
-    sumstat_lbls(8) = 'count_>1.25'   ! TODO: check if labels read in OK by R  
-
-    allocate(sum_mask(nrows_grm))
+    sumstat_lbls(8) = 'count_>1.25'    
+    group_lbl = (/ 'total ', 'total ', 'subset', 'subset' /)
+    part_lbl  = (/ 'diagonal', 'between ', 'diagonal', 'between ' /)
   
     open(42, file=trim(summaryfile), action='write')
-!     write(42,*)  'grmFile   ',  trim(grmFile)
-!      write(42,*)  'OnlyFile  ',  trim(onlyFile)
-      write(42,'(4a15, 20(3x,a12))') 'Group', 'Part', 'N_pairs', 'N_SNPs', sumstat_lbls
-      sum_mask = IsDiagonal
-      write(42, '(2a15, i15, f15.2, 4f15.6, 4i15)') 'total', 'diagonal', &
-        COUNT(sum_mask), mean_SNPs(sum_mask), sumstats(sum_mask), sumstats_counts(sum_mask)
-      sum_mask = .not. IsDiagonal
-      write(42, '(2a15, i15, f15.2, 4f15.6, 4i15)') 'total', 'between', &
-        COUNT(sum_mask), mean_SNPs(sum_mask), sumstats(sum_mask), sumstats_counts(sum_mask)
-      if (any(skip)) then 
-        sum_mask = IsDiagonal .and. InSubset
-        write(42, '(2a15, i15, f15.2, 4f15.6, 4i15)') 'subset', 'diagonal', &
-          COUNT(sum_mask), mean_SNPs(sum_mask), sumstats(sum_mask), sumstats_counts(sum_mask)
-        sum_mask = .not. IsDiagonal .and. InSubset
-        write(42, '(2a15, i15, f15.2, 4f15.6, 4i15)') 'subset', 'between', &
-          COUNT(sum_mask), mean_SNPs(sum_mask), sumstats(sum_mask), sumstats_counts(sum_mask) 
-      endif
+      write(42,'(2a15, a20,a15, 4(5x,a10), 4(8x,a12))') 'Group', 'Part', 'N_pairs', 'N_SNPs', sumstat_lbls
+      do g=1,4
+        if (g>2 .and. .not. any(skip))  exit
+        write(42, '(2a15, i20, f15.2, 4f15.6, 4i20)') group_lbl(g), part_lbl(g), &
+          SUM(N_pairs_chunk(:,g)), wmean(mean_SNPs_chunk(:,g), N_pairs_chunk(:,g)), &
+           MINVAL(stats_chunk(1,:,g)), MAXVAL(stats_chunk(2,:,g)), & 
+           wmean(stats_chunk(3,:,g), N_pairs_chunk(:,g)), & 
+           wSD(stats_chunk(4,:,g), stats_chunk(3,:,g), N_pairs_chunk(:,g)), &  
+           SUM(counts_chunk(:,:,g), DIM=2)
+      enddo
     close(42)
     if (.not. quiet) then
       call printt("summary statistics written to "//trim(summaryfile))
     endif
-    deallocate(sum_mask)
   endif
   
   
   if (DoHist) then   
-    hist_brks = breaks(first=hist_opts(1), last=hist_opts(2), step=hist_opts(3))
-    nBins = size(hist_brks) -1
-    if (any(skip)) then
-      allocate(hist_counts(nBins,4))
-    else
-      allocate(hist_counts(nBins,2))
-    endif
-    allocate(hist_mask(nrows_GRM))
-    
-    hist_mask = IsDiagonal
-    hist_counts(:,1) = grm_hist(MASK=hist_mask, breaks=hist_brks)
-    hist_mask = .not. IsDiagonal
-    hist_counts(:,2) = grm_hist(MASK=hist_mask, breaks=hist_brks)
-    if (any(skip)) then
-      hist_mask = IsDiagonal .and. InSubset
-      hist_counts(:,3) = grm_hist(MASK=hist_mask, breaks=hist_brks)
-      hist_mask = .not. IsDiagonal .and. InSubset
-      hist_counts(:,4) = grm_hist(MASK=hist_mask, breaks=hist_brks)
-    endif
+    do g=1,4
+      if (g>2 .and. .not. any(skip))  exit
+      hist_counts(:,g) = SUM(hist_chunk(:,:,g), DIM=2)
+    enddo
     
     open(101, file=trim(histFile), action='write')
       if (any(skip)) then
@@ -604,64 +658,32 @@ program main
   
  
   ! clean up
-  if (allocated(ID))    deallocate(ID)  
-  if (allocated(skip))  deallocate(skip)
-  if (allocated(GRM))   deallocate(GRM)
-  if (allocated(IsDiagonal))  deallocate(IsDiagonal)
-  if (allocated(hist_brks))   deallocate(hist_brks)
-  if (allocated(hist_mask))   deallocate(hist_mask)
-  if (allocated(nSnp))   deallocate(nSnp)
-  if (allocated(InSubset))  deallocate(InSubset)
+  call deallocall()
+  if (allocated(hist_counts))   deallocate(hist_counts)
   
   if (.not. quiet)  call printt('Done.')
   
-  !=========================
-  contains
-    function mean_SNPs(MASK)
-      logical, intent(IN) :: MASK(:)
-      double precision :: mean_SNPs
-      
-      mean_SNPs = SUM(nSnp/1000D0, MASK=MASK) / COUNT(MASK=MASK) * 1000D0   ! got rounded to INF..     
-    end function mean_SNPs
-  
-    function sumstats(MASK)
-      logical, intent(IN) :: MASK(:)
-      double precision :: sumstats(4)
-      
-      sumstats(1) = MINVAL(GRM, MASK=MASK)
-      sumstats(2) = MAXVAL(GRM, MASK=MASK)
-      sumstats(3) = SUM(GRM, MASK=MASK)/COUNT(MASK=MASK)  ! mean
-      sumstats(4) = SD(GRM, MASK=MASK)   ! standard deviation; function defined in module Fun
-    end function sumstats
-
-    function sumstats_counts(MASK)
-      logical, intent(IN) :: MASK(:)
-      integer :: sumstats_counts(4)
-
-      sumstats_counts(1) = COUNT(GRM < -0.5  .and. MASK)
-      sumstats_counts(2) = COUNT(GRM < 0.625 .and. MASK)
-      sumstats_counts(3) = COUNT(GRM > 0.875 .and. MASK)
-      sumstats_counts(4) = COUNT(GRM > 1.25  .and. MASK)
-    end function sumstats_counts
-
-        
+     
 end program main
 
 !========================================================================
 
-subroutine ReadFilterGRM(grmFile, filterFile)
+subroutine ProcessGRM(grmFile, filterFile)
   use Global_vars
-  use Fun, ONLY: timestamp, roundit
+  use Fun, ONLY: timestamp
+  use stats_fun, ONLY: roundit
+  use GRM_fun
   implicit none
   
   character(len=*), intent(IN) :: grmFile, filterFile
-  integer :: n, x, p, i, j, z, ios
-  integer(kind=ik10) :: print_chunk, timing_y, y
+  integer :: n, x, p, i, j, z, ios, g
+  integer(kind=ik10) :: chunk_size, timing_y, y, a
   logical :: WritePair
   double precision :: r, CurrentTime(2)
+  logical, allocatable :: summary_mask(:,:)
+              
   
-  
-    ! create & open named pipe with data from .grm.gz
+  ! create & open named pipe with data from .grm.gz
   ! NOTE: EXECUTE_COMMAND_LINE() is fortran 2008 standard, 
   ! and possibly not supported by ifort. 
   ! SYSTEM() is gnu extension and possibly supported by both gfortran & ifort
@@ -684,34 +706,56 @@ subroutine ReadFilterGRM(grmFile, filterFile)
     write(42, '(2a10, 2X, 2a40, a10, a15)') 'index1', 'index2', 'ID1', 'ID2', 'nSNP', 'R'
   endif  
     
-    n = 0
-    x = 0
-    print_chunk = roundit(nrows_grm/20D0,2)  ! print at approx every 5% progress
-    p = 0
+    if (nrows_grm < 1000) then
+      chunk_size = nrows_grm
+    else
+      chunk_size = roundit(nrows_grm/dble(Nchunks),2)  ! calc at approx every 5% progress
+    endif
     timing_y = roundit(nrows_grm/50D0,1)   ! round at which to estimate & print total runtime
+    
+    
+    if (DoSummary) then
+      allocate(GRM(chunk_size))      
+      allocate(indx(2, chunk_size))     
+      allocate(nSnp(chunk_size))      
+      allocate(IsDiagonal(chunk_size))     
+      allocate(InSubset(chunk_size))    
+      allocate(summary_mask(chunk_size,4))
+      
+      x = 0
+      GRM = -999D0
+      indx = 0
+      nSnp = 0
+      IsDiagonal = .FALSE.
+      InSubset = .TRUE.      
+      summary_mask = .FALSE.
+    endif
+    
     call cpu_time(CurrentTime(1))
-
+    p = 1   ! chunk number
+    x = 1   ! pair number within chunk
+    n = 0   ! filtered pair number
+    
     do y = 1, nrows_grm
-      
-      if (.not. quiet) then
-        if (MOD(y, print_chunk)==0) then
-          p = p +1
-          call timestamp()
-          print *, y, '  ', p*5, '%'
-        else if (y == timing_y) then
-          call cpu_time(CurrentTime(2))
-          print *, ''
-          call timestamp(.TRUE.)
-          write(*,'("Estimated total runtime (min): ", f7.1)')  (CurrentTime(2) - CurrentTime(1))*50/60
-          print *, ''
-        endif
-      endif
-      
+
+      if (.not. quiet .and. y == timing_y) then
+        call cpu_time(CurrentTime(2))
+        print *, ''
+        call timestamp(.TRUE.)
+        write(*,'("Estimated total runtime (min): ", f7.1)')  (CurrentTime(2) - CurrentTime(1))*50/60
+        print *, ''
+      endif  
+
+     if (.not. quiet .and. MOD(y, chunk_size)==0) then      
+       call timestamp()
+       print *, y, '  ', p*100/Nchunks, '%'
+     endif  
+
       read(11, *, iostat=ios) i,j,z,r  
       if (ios/=0) exit   ! stop if end of file / incorrect entry
       if (skip(i) .and. skip(j)) then
         if (DoSummary) then
-          InSubset(y) = .FALSE.
+          InSubset(x) = .FALSE.
         else
           cycle 
         endif
@@ -719,21 +763,23 @@ subroutine ReadFilterGRM(grmFile, filterFile)
       if (OnlyAmong) then
         if (skip(i) .or. skip(j)) then
           if (DoSummary) then
-            InSubset(y) = .FALSE.
+            InSubset(x) = .FALSE.
           else
             cycle
           endif
         endif
       endif
-      x = x+1
       if (DoSummary) then
-        indx(:,y) = (/i,j/)
-        nSnp(y) = z
-        GRM(y) = r
-        if (i==j)  Isdiagonal(y) = .TRUE.
+        indx(:,x) = (/i,j/)
+        nSnp(x) = z
+        GRM(x) = r
+        if (i==j)  Isdiagonal(x) = .TRUE.
       endif
+!      if (y > 994 .and. y < 1006)  print *, y, p, x, i,j, IsDiagonal(x), InSubset(x), nSnp(x), GRM(x)
+!      if (i==j .and. x<300)  print *, p, x, i, IsDiagonal(x), skip(i), InSubset(x)
       
-      if (.not. ANY(DoFilter)) cycle
+      
+!      if (.not. ANY(DoFilter)) cycle
       ! write to outfile entries that meet criteria
       WritePair = .FALSE.
       if (i==j .and. DoFilter(1)) then  ! diagonal
@@ -753,6 +799,51 @@ subroutine ReadFilterGRM(grmFile, filterFile)
        n = n+1
        write(42, '(2i10, 2X, 2a40, i10, e15.6)')  i, j, ID(i), ID(j), z, r
      endif 
+     
+     if (DoSummary .and. (MOD(y, chunk_size)==0 .or. y==nrows_grm)) then      
+        summary_mask(:,1) = IsDiagonal
+        summary_mask(:,2) = .not. IsDiagonal
+        summary_mask(:,3) = IsDiagonal .and. InSubset
+        summary_mask(:,4) = .not. IsDiagonal .and. InSubset
+        
+!        print *, y, p, x, y>nrows_grm, COUNT(summary_mask(:,2)), &
+!           COUNT(((/ (a, a=1,chunk_size)/) <= x)), &
+!           COUNT(summary_mask(:,2) .and. ((/ (a, a=1,chunk_size)/) <= x))
+        
+        if (y==nrows_grm) then  ! last chunk
+          do g=1,4
+            summary_mask(:,g) = summary_mask(:,g) .and. ((/ (a, a=1,chunk_size)/) <= x)
+          enddo
+        endif
+        
+        do g=1,4
+          if (g>2 .and. .not. any(skip))  exit
+          N_pairs_chunk(p,g) = COUNT(summary_mask(:,g))
+          mean_SNPs_chunk(p,g) = mean_SNPs(summary_mask(:,g))  
+          stats_chunk(:,p,g) = sumstats(summary_mask(:,g))
+          counts_chunk(:,p,g) = sumstats_counts(summary_mask(:,g))
+        enddo
+        
+        if (DoHist) then
+          do g=1,4
+            if (g>2 .and. .not. any(skip))  exit
+            hist_chunk(:,p,g) = grm_hist(summary_mask(:,g))
+          enddo
+        endif
+        
+        if (y==nrows_grm)  exit
+        
+        p = p +1
+        x = 0
+        GRM = -999D0
+        indx = 0
+        nSnp = 0
+        IsDiagonal = .FALSE.
+        InSubset = .TRUE.      
+        summary_mask = .FALSE.
+      endif 
+      
+      x = x+1      
   
     end do
   
@@ -780,7 +871,7 @@ subroutine ReadFilterGRM(grmFile, filterFile)
   ! remove named pipe
   CALL EXECUTE_COMMAND_LINE("rm -f grmpipe")
   
-end subroutine ReadFilterGRM
+end subroutine ProcessGRM
 
 !===============================================================================
 
@@ -837,4 +928,21 @@ end subroutine ReadOnlyList
 
 !===============================================================================
 
+subroutine deallocall
+  use Global_vars
+  implicit none
+  
+  if (allocated(ID))    deallocate(ID)  
+  if (allocated(GRM))   deallocate(GRM)
+  if (allocated(skip))  deallocate(skip)
+  if (allocated(IsDiagonal))  deallocate(IsDiagonal)
+  if (allocated(InSubset))  deallocate(InSubset)
+  if (allocated(hist_brks))   deallocate(hist_brks)
+  if (allocated(hist_chunk))   deallocate(hist_chunk)
+  if (allocated(nSnp))   deallocate(nSnp)
+  if (allocated(indx))   deallocate(indx)
+  
+end subroutine deallocall
+
+!===============================================================================
 ! end.
