@@ -26,8 +26,8 @@
 module Global_vars
   implicit none
   
-  integer, parameter :: nchar_filename = 2000, nchar_ID = 40, Nchunks = 20
-  integer, parameter :: ik10 = selected_int_kind(10)
+  integer, parameter :: nchar_filename = 2000, nchar_ID = 40, Nchunks = 50
+  integer, parameter :: ik10 = selected_int_kind(11)
   integer(kind=ik10) :: nrows_grm, N_pairs_chunk(Nchunks+1,4), counts_chunk(4,Nchunks+1,4)
   integer, allocatable :: nSnp(:), indx(:,:)
   integer(kind=ik10), allocatable :: hist_chunk(:,:,:)
@@ -215,8 +215,8 @@ module GRM_fun
       integer(kind=ik10) :: grm_hist(nBins)
       integer :: b
       
-      if (any(GRM <= hist_brks(1) .and. MASK)) print *, 'hist() WARNING: some data <= first'
-      if (any(GRM > hist_brks(nBins) .and. MASK))   print *, 'hist() WARNING: some data > last'
+!      if (any(GRM <= hist_brks(1) .and. MASK)) print *, 'hist() WARNING: some data <= first'
+!      if (any(GRM > hist_brks(nBins) .and. MASK))   print *, 'hist() WARNING: some data > last'
       
       grm_hist = 0  
       do b=1, nBins
@@ -676,8 +676,8 @@ subroutine ProcessGRM(grmFile, filterFile)
   implicit none
   
   character(len=*), intent(IN) :: grmFile, filterFile
-  integer :: n, x, p, i, j, z, ios, g
-  integer(kind=ik10) :: chunk_size, timing_y, y, a
+  integer :: p, i, j, z, ios, g
+  integer(kind=ik10) :: chunk_size, timing_y, y, a, n, x
   logical :: WritePair
   double precision :: r, CurrentTime(2)
   logical, allocatable :: summary_mask(:,:)
@@ -695,8 +695,8 @@ subroutine ProcessGRM(grmFile, filterFile)
   ! decompression instruction, this forms the flow into the pipe
   ! between brackets: run in separate subshell
   ! &: put the process in background
-  !call EXECUTE_COMMAND_LINE("(pigz -dc  "//trim(grmFile)//".grm.gz > grmpipe) &")
-  call EXECUTE_COMMAND_LINE("(gzip -dc  "//trim(grmFile)//".grm.gz > grmpipe) &")
+  call EXECUTE_COMMAND_LINE("(pigz -dc  "//trim(grmFile)//".grm.gz > grmpipe) &")
+  !call EXECUTE_COMMAND_LINE("(gzip -dc  "//trim(grmFile)//".grm.gz > grmpipe) &")
 
   ! open a read (outflow) connection to the pipe
   open(11, file="grmpipe", action='read')  
@@ -749,6 +749,7 @@ subroutine ProcessGRM(grmFile, filterFile)
      if (.not. quiet .and. MOD(y, chunk_size)==0) then      
        call timestamp()
        print *, y, '  ', p*100/Nchunks, '%'
+       if (.not. DoSummary)  p = p+1  ! else updated after summary
      endif  
 
       read(11, *, iostat=ios) i,j,z,r  
