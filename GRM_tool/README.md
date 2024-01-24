@@ -2,7 +2,7 @@
 
 ### A fortran program to summarise and filter GRMs
 
-Jisca Huisman, 2024-01-14
+Jisca Huisman, 2024-01-24
 
 ## Description
 
@@ -27,14 +27,21 @@ gfortran by another compiler of your choice)
 
 - `--in` : input file pair with GRM, as returned by
   `plink --make-grm-gz` or `gcta --make-grm`. Extensions .grm.id and
-  .grm.gz are added.
+  .grm.gz\* are added.
+
 - `--only` : individual subset, only pairs where either individual is
   listed are considered. A text file with no header, and either two
   columns with IDs in the second column (same format as for
   `plink --keep`), or a single column with IDs (any additional columns
   are ignored if there are \>2 columns).
+
 - `-only-among` : as `--only`, but only pairs where *both* individuals
   are listed are considered. grm
+
+- : except when option `--notgz` is used, then extension .grm is added
+  and the file is presumed to be a plain text file
+
+Binary files (.grm.bin) are currently not supported.
 
 ## Program options
 
@@ -205,12 +212,17 @@ left overs). For the standard deviation, the ‘extension to K groups’ at
 <https://stats.stackexchange.com/questions/55999/is-it-possible-to-find-the-combined-standard-deviation?noredirect=1&lq=1>
 is used.
 
-The program currently uses gzip for decompression, but this can easily
-be changed by changing `gzip` to e.g. `pigz` at the following line in
+The number of chunks can be set with `--chunks <x>`. When the number of
+individuals is large relative to the amount of available memory, a
+larger number of chunks can be chosen. Limited testing suggests
+computational time is minimised at an intermediate number of chunks.
+
+The program currently uses pigz for decompression, but this can easily
+be changed by changing `pigz` to e.g. `gzip` at the following line in
 the source code:
 
 ``` fortran
-call EXECUTE_COMMAND_LINE("(gzip -dc  "//trim(grmFile)//".grm.gz > grmpipe) &")
+call EXECUTE_COMMAND_LINE("(pigz -dc  "//trim(grmFile)//".grm.gz > grmpipe) &")
 ```
 
 ## Example data
