@@ -26,18 +26,17 @@
 module Global_vars
   implicit none
   
-  integer, parameter :: nchar_filename = 2000, nchar_ID = 40, Nchunks = 50
+  integer, parameter :: nchar_filename = 2000, nchar_ID = 40
   integer, parameter :: ik10 = selected_int_kind(11)
-  integer(kind=ik10) :: nrows_grm, N_pairs_chunk(Nchunks+1,4), counts_chunk(4,Nchunks+1,4)
+  integer(kind=ik10) :: nrows_grm
   integer, allocatable :: nSnp(:), indx(:,:)
-  integer(kind=ik10), allocatable :: hist_chunk(:,:,:)
-  integer :: nBins
+  integer(kind=ik10), allocatable :: hist_chunk(:,:,:), N_pairs_chunk(:,:), counts_chunk(:,:,:)
+  integer :: nBins, Nchunks
   character(len=nchar_ID), allocatable :: ID(:)
-  logical :: DoSummary, DoFilter(2), DoHist, OnlyAmong, quiet
+  logical :: DoSummary, DoFilter(2), DoHist, OnlyAmong, quiet, IsGZ
   logical, allocatable :: skip(:), IsDiagonal(:), InSubset(:)
-  double precision :: lowr_d, upr_d, lowr_b, upr_b, &
-    mean_SNPs_chunk(Nchunks+1,4), stats_chunk(4,Nchunks+1,4) 
-  double precision, allocatable :: GRM(:), hist_brks(:)
+  double precision :: lowr_d, upr_d, lowr_b, upr_b 
+  double precision, allocatable :: GRM(:), hist_brks(:), mean_SNPs_chunk(:,:), stats_chunk(:,:,:)
   
   
   contains
@@ -46,7 +45,8 @@ module Global_vars
     print '(a, /)', ' ~~ Calculate summary statistics and/or filter pairs from (very) large GRMs ~~'
     print '(a, /)', 'command-line options:'
     print '(a)',    '  --help         print usage information and exit'
-    print '(a)',    '  --in <grmfile>    input file with GRM; extensions .grm.id and .grm.gz are added' 
+    print '(a)',    '  --in <grmfile> input file with GRM; extensions .grm.id and .grm.gz are added' 
+    print '(a)',    '  --notgz        input file is .grm (plain text) rather than .grm.gz'
     print '(a)',    '  --out_prefix <file>  prefix for output files; defaults to <grmfile> '    
     print '(a)',    '  --summary-out <file>  output file for summary statistics, default: ', &
                     '                    <grmfile>_summary_stats.txt ' 
@@ -66,6 +66,7 @@ module Global_vars
     print '(a)',    '  --only <file>  only consider pairs with one or both individuals listed,',&
                     '                    IDs in first/single column or columns FID (ignored) + IID'
     print '(a)',    '  --only-among <file>  only consider pairs with both individuals listed'
+    print '(a)',    '  --chunks <x>   number of chunks; partial summary statistics are calculated after each'
     print '(a)',    '  --quiet        hide messages'
     print '(a)',    ''
   end subroutine print_help
@@ -362,12 +363,14 @@ program main
   DoFilter = .FALSE.
   DoHist = .FALSE.
   quiet = .FALSE.
+  IsGZ = .TRUE.
   
   lowr_d = -HUGE(0D0)
   upr_d  = HUGE(0D0)
   lowr_b = -HUGE(0D0)
   upr_b  = HUGE(0D0)
   
+  Nchunks = 20
   hist_opts = (/-1.5d0, 2.0d0, 0.05d0/)  ! first, last, step
 
   
@@ -387,6 +390,9 @@ program main
       case ('--in')
         i = i+1
         call get_command_argument(i, grmFile)
+        
+      case ('--notgz')
+        IsGZ = .FALSE.
         
       case ('--out-prefix')
         i = i+1
@@ -468,6 +474,12 @@ program main
         call get_command_argument(i, onlyFile)
         OnlyAmong = .TRUE.
         
+      case ('--chunks')
+        i = i+1
+        call get_command_argument(i, argOption)
+        read(argOption, *)  Nchunks
+        if (Nchunks < 1 .or. Nchunks > 2000)  stop 'Nchunks must be >= 1 and <= 2000'
+        
       case ('--quiet')
         quiet = .TRUE.
         
@@ -498,9 +510,13 @@ program main
       write(*,*)  "Input file ", trim(grmFile), ".grm.id not found"
       stop
     endif
-    inquire(file=trim(grmFile)//'.grm.gz', exist = FileExists)
+    if (IsGZ) then
+      inquire(file=trim(grmFile)//'.grm.gz', exist = FileExists)
+    else
+      inquire(file=trim(grmFile)//'.grm', exist = FileExists)
+    endif
     if (.not. FileExists) then
-      write(*,*)  "Input file ", trim(grmFile), ".grm.gz not found"
+      write(*,*)  "Input file ", trim(grmFile), ".grm(.gz) not found"
       stop
     endif
   endif
@@ -599,6 +615,13 @@ program main
       allocate(hist_counts(nBins,2))
     endif
   endif
+  
+  if (DoSummary) then
+    allocate(N_pairs_chunk(Nchunks+1,4))
+    allocate(mean_SNPs_chunk(Nchunks+1,4))
+    allocate(stats_chunk(4,Nchunks+1,4))
+    allocate(counts_chunk(4,Nchunks+1,4))
+  endif
 
   ! read in GRM & filter
   call ProcessGRM(grmFile, filterFile)
@@ -676,30 +699,34 @@ subroutine ProcessGRM(grmFile, filterFile)
   implicit none
   
   character(len=*), intent(IN) :: grmFile, filterFile
-  integer :: p, i, j, z, ios, g
-  integer(kind=ik10) :: chunk_size, timing_y, y, a, n, x
+  integer :: p, i, j, z, ios, g, t
+  integer(kind=ik10) :: chunk_size, timing_y, y, a, n, x, print_chunk
   logical :: WritePair
   double precision :: r, CurrentTime(2)
   logical, allocatable :: summary_mask(:,:)
               
   
-  ! create & open named pipe with data from .grm.gz
-  ! NOTE: EXECUTE_COMMAND_LINE() is fortran 2008 standard, 
-  ! and possibly not supported by ifort. 
-  ! SYSTEM() is gnu extension and possibly supported by both gfortran & ifort
-  
-  ! create a named pipe
-  ! see https://www.linuxjournal.com/article/2156
-  call EXECUTE_COMMAND_LINE("rm -f grmpipe ; mkfifo grmpipe")
+  if (IsGZ) then
+    ! create & open named pipe with data from .grm.gz
+    ! NOTE: EXECUTE_COMMAND_LINE() is fortran 2008 standard, 
+    ! and possibly not supported by ifort. 
+    ! SYSTEM() is gnu extension and possibly supported by both gfortran & ifort
 
-  ! decompression instruction, this forms the flow into the pipe
-  ! between brackets: run in separate subshell
-  ! &: put the process in background
-  call EXECUTE_COMMAND_LINE("(pigz -dc  "//trim(grmFile)//".grm.gz > grmpipe) &")
-  !call EXECUTE_COMMAND_LINE("(gzip -dc  "//trim(grmFile)//".grm.gz > grmpipe) &")
+    ! create a named pipe
+    ! see https://www.linuxjournal.com/article/2156
+    call EXECUTE_COMMAND_LINE("rm -f grmpipe ; mkfifo grmpipe")
 
-  ! open a read (outflow) connection to the pipe
-  open(11, file="grmpipe", action='read')  
+    ! decompression instruction, this forms the flow into the pipe
+    ! between brackets: run in separate subshell
+    ! &: put the process in background
+    call EXECUTE_COMMAND_LINE("(pigz -dc  "//trim(grmFile)//".grm.gz > grmpipe) &")
+    !call EXECUTE_COMMAND_LINE("(gzip -dc  "//trim(grmFile)//".grm.gz > grmpipe) &")
+
+    ! open a read (outflow) connection to the pipe
+    open(11, file="grmpipe", action='read') 
+  else
+    open(11, file=trim(grmFile)//".grm", action='read')
+  endif
   
   if (ANY(DoFilter)) then
     open(42, file=trim(filterFile), action='write')  
@@ -709,10 +736,11 @@ subroutine ProcessGRM(grmFile, filterFile)
     if (nrows_grm < 1000) then
       chunk_size = nrows_grm
     else
-      chunk_size = roundit(nrows_grm/dble(Nchunks),2)  ! calc at approx every 5% progress
+      chunk_size = INT(nrows_grm/dble(Nchunks)) 
+      print *, 'Doing calculations in ', Nchunks, ' chunks of ', chunk_size, ' pairs each'
     endif
-    timing_y = roundit(nrows_grm/50D0,1)   ! round at which to estimate & print total runtime
-    
+    timing_y = roundit(nrows_grm/50D0,1)     ! round at which to estimate & print total runtime
+    print_chunk = roundit(nrows_grm/20D0,2)  ! print progress at approx every 5%
     
     if (DoSummary) then
       allocate(GRM(chunk_size))      
@@ -735,6 +763,7 @@ subroutine ProcessGRM(grmFile, filterFile)
     p = 1   ! chunk number
     x = 1   ! pair number within chunk
     n = 0   ! filtered pair number
+    t = 1   ! for progress updates
     
     do y = 1, nrows_grm
 
@@ -746,10 +775,10 @@ subroutine ProcessGRM(grmFile, filterFile)
         print *, ''
       endif  
 
-     if (.not. quiet .and. MOD(y, chunk_size)==0) then      
+     if (.not. quiet .and. MOD(y, print_chunk)==0) then      
        call timestamp()
-       print *, y, '  ', p*100/Nchunks, '%'
-       if (.not. DoSummary)  p = p+1  ! else updated after summary
+       print *, y, '  ', t*5, '%'
+       t = t+1 
      endif  
 
       read(11, *, iostat=ios) i,j,z,r  
@@ -942,6 +971,10 @@ subroutine deallocall
   if (allocated(hist_chunk))   deallocate(hist_chunk)
   if (allocated(nSnp))   deallocate(nSnp)
   if (allocated(indx))   deallocate(indx)
+  if (allocated(N_pairs_chunk))  deallocate(N_pairs_chunk)
+  if (allocated(mean_SNPs_chunk))  deallocate(mean_SNPs_chunk)
+  if (allocated(stats_chunk))  deallocate(stats_chunk)
+  if (allocated(counts_chunk))  deallocate(counts_chunk)
   
 end subroutine deallocall
 
