@@ -80,6 +80,7 @@ module FileIO
       allocate(character(len=500000) :: line)
 
       open(unit=102, file=trim(FileName), status="old")
+      read(102,*)    ! skip header (if any), which is longer due to long SNP names
       read(102, '(a)' ) line
       close(102) 
 
