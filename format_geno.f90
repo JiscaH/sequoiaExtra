@@ -59,84 +59,100 @@ end module Global_variables
 module FileIO
   implicit none 
 
-  contains
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    integer function FileNumCol(FileName, sep)
-      implicit none
+contains
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! determine the number of columns in a file
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  integer function FileNumCol(FileName, sep, has_header)
+    character(len=*), intent(IN) :: FileName
+    character(len=*), intent(IN), optional :: sep
+    logical, intent(IN), optional :: has_header   ! skip header (if any), which has more characters due to long SNP names
+    integer :: j, strLen, numcol, ios
+    character(len=:), allocatable :: line
+    character(len=1) :: s(2)
+    logical :: skip_header
+    
+    if (present(sep)) then   ! separator
+      s = (/ sep, '' /)
+    else
+      s = (/ ' ', achar(9) /)  ! achar(9) = \t (tab)
+    endif
+    
+    if (present(has_header)) then
+      skip_header = has_header
+    else
+      skip_header = .FALSE.
+    endif
+    
+    allocate(character(len=500000) :: line)
 
-      character(len=*), intent(IN) :: FileName
-      character(len=*), intent(IN), optional :: sep
-      integer :: j, strLen, numcol
-      character(len=:), allocatable :: line
-      character(len=1) :: s(2)
-      
-      s = ''
-      if (present(sep)) then   ! separator
-        s(1) = sep
-      else
-        s = (/ ' ', achar(9) /)  ! achar(9) = \t
-      endif
-      
-      allocate(character(len=500000) :: line)
-
-      open(unit=102, file=trim(FileName), status="old")
-      read(102,*)    ! skip header (if any), which is longer due to long SNP names
-      read(102, '(a)' ) line
-      close(102) 
-
-      strLen = len_trim(line)
-      if (strLen >= 500000)  print *, 'WARNING: EXCEEDING MAXIMUM NUMBER OF SNPs!'
-      
-      if (strLen  == 0) then
+    open(unit=102, file=trim(FileName), status="old")
+    if (skip_header) then
+      read(102,*,IOSTAT=ios)   
+      if (ios < 0) then
         FileNumCol = 0
         return
       endif
-      
-      if (all(s=='')) then
-        FileNumCol = strLen
-        return
+    endif
+    read(102, '(a)',IOSTAT=ios) line
+    if (ios < 0) then
+      FileNumCol = 0
+      return
+    endif
+    close(102) 
+
+    strLen = len_trim(line)
+    if (strLen >= 500000)  print *, 'WARNING: '//trim(FileName)//' EXCEEDING MAXIMUM NUMBER OF COLUMNS!'
+    
+    if (strLen  == 0) then
+      FileNumCol = 0
+      return
+    endif
+    
+    if (all(s=='')) then
+      FileNumCol = strLen
+      return
+    endif
+
+    numcol = 0   ! first column (no space 'after')  achar(9) = \t
+    do j=1, strLen-1
+      if (j==1 .and. .not. any(s == line(j:j))) then
+        numcol = numcol +1
       endif
-
-      numcol = 0   ! first column (no space 'after')  achar(9) = \t
-      do j=1, strLen-1
-        if (j==1 .and. .not. any(s == line(j:j))) then
-          numcol = numcol +1
+      if (any(s == line(j:j))) then
+        if (.not. any(s == line((j+1):(j+1)))) then
+          numcol = numcol +1    ! new column starts at j+1
         endif
-        if (any(s == line(j:j))) then
-          if (.not. any(s == line((j+1):(j+1)))) then
-            numcol = numcol +1    ! new column starts at j+1
-          endif
-        endif
-      enddo
-      FileNumCol = numcol
-      
-      deallocate(line)
+      endif
+    enddo
+    FileNumCol = numcol
 
-    end function FileNumCol
+  end function FileNumCol
 
-    !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    integer function FileNumRow(FileName)
-      implicit none
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! determine the number of rows in a file
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  integer function FileNumRow(FileName)
+    character(len=*), intent(IN) :: FileName
+    integer :: nrow, i, maxRow, ios
+    character(len=42) :: dumC
 
-      character(len=*), intent(IN) :: FileName
-      integer :: nrow, i, maxRow, IOerr 
-      character(len=42) :: dumC  
-
-      maxRow = 5000000  ! fail safe
-      nrow = 0
-      open(unit=102, file=trim(FileName), status="old")
+    maxRow = 1e6  ! fail safe
+    nrow = 0
+    open(unit=102, file=trim(FileName), status="old", action='read')
       do i=1, maxRow
-        read(102,*,IOSTAT=IOerr) dumC
-        if (IOerr < 0) then
-          exit  ! EOF
+        read(102,*,IOSTAT=ios) dumC
+        if (ios < 0) then
+          exit  ! end of file
         else
           nrow = nrow +1  
         end if
       enddo
-      close(102)
-      FileNumRow = nrow
+    close(102)
+    if (nrow >= maxRow) print *, 'WARNING: '//trim(FileName)//' EXCEEDING MAXIMUM NUMBER OF ROWS!'
+    FileNumRow = nrow
 
-    end function FileNumRow
+  end function FileNumRow 
   
 end module FileIO
 
