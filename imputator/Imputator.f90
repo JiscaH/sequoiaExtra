@@ -637,9 +637,10 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ! snp cleaning & imputation across all SNPs
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine clean_n_impute(LogFile)
+  subroutine clean_n_impute(LogFile)  ! , do_pedigree
 
     character(len=*), intent(IN) :: LogFile
+ !   logical, intent(IN) :: do_pedigree
     double precision, parameter :: doubt_threshold = 0.49  ! if two genotypes have prob > doubt_threshold, impute as --when-in-doubt
     integer :: l,x, unit_log
     character(len=20) :: nIndT_char
@@ -1114,7 +1115,7 @@ program main
   character(len=3) :: GenoInFormat, GenoOutFormat
   character(len=nchar_ID), allocatable :: IdV(:)
   real :: Threshold_pedclean
-  logical :: do_pedclean
+  logical :: do_pedclean, do_pedigree
     
   call read_args()   ! set defaults & read command line arguments
   
@@ -1129,8 +1130,8 @@ program main
  
   if (.not. quiet)  call print_sumstats('IN') 
  
-  if (.not. quiet)  print *, 'reading pedigree file ... '
-  call read_pedigree(PedigreeFile)
+  if (do_pedigree .and. .not. quiet)  print *, 'reading pedigree file ... '
+  if (do_pedigree) call read_pedigree(PedigreeFile)
   
   allocate(AF(nSnp))
   AF = getAF(AFFile) 
@@ -1138,14 +1139,14 @@ program main
   
   if (do_pedclean) then
     if (.not. quiet)  print *, 'cleaning pedigree ... '   
-    call clean_pedigree('log_ped_clean.txt', Threshold_pedclean)
+    call clean_pedigree('pedclean.log', Threshold_pedclean)
   else
     if (.not. quiet)  print *, 'skipping pedigree cleaning ...'
   endif
   
   call init_matings()
   
-  call clean_n_impute(LogFile)
+  call clean_n_impute(LogFile)  ! , do_pedigree
   
   if (.not. quiet)  print *, 'writing new genotypes to file ...'
   if (do_geno_out)  call apply_edits(LogFile, GenoOutFile, GenoOutFormat)
@@ -1170,11 +1171,12 @@ contains
     ! set defaults
     GenoFile = 'Geno'
     GenoInFormat = 'SEQ'
+    do_pedigree = .TRUE.
     PedigreeFile = 'Pedigree.txt'  ! 'ped_griffin.txt'
     AFFile = 'NoFile'
     GenoOutFile = 'Geno_imputed'
     GenoOutFormat = 'SEQ'
-    LogFile = 'Imputation_log.txt'
+    LogFile = 'imputation.log'
     Er = 0.001
     do_pedclean = .TRUE.
     Threshold_pedclean = 0.05
@@ -1218,6 +1220,9 @@ contains
           case ('--pedigree')  
             i = i+1
             call get_command_argument(i, PedigreeFile)
+            
+          case ('--no-pedigree')
+            do_pedigree = .FALSE.
             
           case ('--err')
             i = i+1
@@ -1310,7 +1315,8 @@ contains
             
           case default
             print '(2a, /)', 'Unrecognised command-line option: ', arg
-            call print_help()
+            print *, 'see --help for valid options'
+!            call print_help()
             stop
 
         end select
@@ -1320,6 +1326,11 @@ contains
     if (do_quick) then
  !     do_pedclean = .FALSE.
       do_snpclean = .FALSE.
+    endif
+    
+    if (.not. do_pedigree) then
+      do_pedclean = .FALSE.
+      do_snpclean = .FALSE.   ! relies on pedigree to detect genotyping errors
     endif
  
   end subroutine read_args
@@ -1340,6 +1351,7 @@ contains
                     '                        .geno + .id'                 
     print '(a)',    '  --pedigree <filename>  file with pedigree, with columns id-parent1-parent2.',&
                     '                          Default: Pedigree.txt'
+    print '(a)',    '  --no-pedigree        impute without pedigree, use `--when-in-doubt` everywhere'  
     print '(a)',    '  --err <value>        presumed genotyping error rate',&
                     '                        (Will be estimated from data in future version)'  
     print '(a)',    '  --af <filename>      optional input file with allele frequencies; only relevant',&

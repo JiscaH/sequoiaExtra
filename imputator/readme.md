@@ -5,7 +5,7 @@
 This program imputes (fills in) missing SNP genotype data using a pedigree. 
 Neither the pedigree nor the SNP data is assumed to be error-free. 
 
-Each SNP is treated completely independently, for programs that use information 
+Each SNP is treated completely independently; for programs that use information 
 from linked SNPs see e.g. Beagle or AlphaImpute. 
 
 
@@ -19,6 +19,10 @@ from linked SNPs see e.g. Beagle or AlphaImpute.
 - create genotype file, e.g. in PLINK .ped/.map format
 - run the program: `./imputator --geno <filename>`. For an overview of the options,
 run `./imputator --help`. 
+
+
+> [!CAUTION]
+> This program is under development and not extensively tested yet. Use is entirely at your own risk.
 
 
 # Method
@@ -104,6 +108,19 @@ E.g. full sibling pairs where one or both parents are not genotyped are not chec
 for this run `sequoia` (https://github.com/JiscaH/sequoia_notR) with only 
 option `--pedigreeIN <filename>`, which is analogous to function `CalcOHLLR()` in the 
 sequoia R package (https://jiscah.github.io/reference/CalcOHLLR.html ).
+
+
+# Alternative methods
+
+The program also offers to alternative, simpler imputation methods. These are mostly
+there to allow easy performance comparisons, but may be useful if e.g. the iterative 
+peeling method takes too long. These are:
+
+- imputation based on parental/ancestral genotypes only, ignoring any full siblings 
+mates of parents, or descendants: option `--quick`
+- imputation without any pedigree, using allele frequencies only: option `--no-pedigree`
+
+
 
 
 # Output
