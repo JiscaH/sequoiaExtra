@@ -1,5 +1,10 @@
-# 0.2.3  2024-02-13
-### New features & major changes
+# 0.2.3  
+
+## 2024-02-16
+- bugfix in sqa_fileIO.f90 readGeno for inFormat PED
+- R script for parallel imputation
+
+## 2024-02-13
 - Imputation based on iterative peeling
 - Various genotype input & output formats
 - Pedigree implemented as a vector of derived type 'individual'

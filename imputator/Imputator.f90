@@ -15,9 +15,10 @@ module global_variables
   use sqa_general, ONLY: ishort, nchar_ID
   implicit none
 
+  character(len=30), parameter :: version = "Imputator v0.2.3 (16 Feb 2024)"
   integer :: nIndG, nInd_max, nIndT, nSnp, nMatings
   integer(kind=ishort), allocatable, target :: Geno(:,:)
-  character(len=nchar_ID), allocatable :: SNP_names(:)
+  character(len=nchar_ID), allocatable :: IdV(:), SNP_names(:)
   double precision :: Er
   double precision, allocatable :: AF(:)
   logical :: quiet
@@ -440,12 +441,12 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ! find & remove low-probability parent-offspring links in the pedigree
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine clean_pedigree(LogFileName, Threshold)
+  subroutine clean_pedigree(EditsFileName, Threshold)
     ! NOTE: only checking genotyped-genotyped parent-offspring pairs
     use global_variables, ONLY : nIndG
     use pedigree_fun, ONLY: pedigree, get_par
     
-    character(len=*), intent(IN) :: LogFileName
+    character(len=*), intent(IN) :: EditsFileName
     real, intent(IN) :: Threshold
     integer :: i, k, j
     double precision :: probs_ij(nRel)
@@ -453,7 +454,7 @@ contains
     call init_pairLL()
     
     ! write to log which links have been removed, with R_probs
-    open(42, file=trim(LogFileName), status='unknown', action='write')
+    open(42, file=trim(EditsFileName), status='unknown', action='write')
       write(42, '(2a40, a12, 6(5X, a7))') 'id', 'parent_id', 'parent_sex', &
         'prob_S ', 'prob_PO', 'prob_FS', 'prob_GP', 'prob_HA', 'prob_UU'
       do i=1,nIndG  
@@ -620,7 +621,8 @@ module impute_fun
   implicit none
   private
 
-  logical, public :: do_snpclean, do_impute, do_geno_out, do_probs_out, do_impute_all, do_quick
+  logical, public :: do_snpclean, do_impute, do_geno_out, do_probs_out, &
+    do_impute_all, do_quick
   real, public :: Threshold_snpclean, Threshold_impute
   double precision, public :: tol
   character(len=3), public :: imp_default
@@ -637,9 +639,10 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ! snp cleaning & imputation across all SNPs
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine clean_n_impute(LogFile)  ! , do_pedigree
+  subroutine clean_n_impute(EditsFile)  ! , do_pedigree
+    use sqa_general, ONLY: printt
 
-    character(len=*), intent(IN) :: LogFile
+    character(len=*), intent(IN) :: EditsFile
  !   logical, intent(IN) :: do_pedigree
     double precision, parameter :: doubt_threshold = 0.49  ! if two genotypes have prob > doubt_threshold, impute as --when-in-doubt
     integer :: l,x, unit_log
@@ -663,7 +666,7 @@ contains
     
     if (do_snpclean .or. do_impute) then
       unit_log = 4
-      open(unit=unit_log, file=trim(LogFile))
+      open(unit=unit_log, file=trim(EditsFile))
       write(unit_log, '(5(a9,2x), 29x,2(a5,2x),3a9)') 'snp_index', 'snp_name',  &
         'threshold', 'id_index', 'id_name', 'g_in', 'g_out', 'prob_0', 'prob_1', 'prob_2'
     endif
@@ -679,7 +682,7 @@ contains
     
     if (.not. quiet) print *, 'cleaning and/or imputing genotype data... '
     do l=1, nSnp 
-      if (.not. quiet .and. mod(l,50)==0) write(*,'(i5, 2x)', advance='no') l
+      if (.not. quiet .and. mod(l,50)==0) call printt(text='l=', int=l)  ! write(*,'(i5, 2x)', advance='no') l
       ! only first iteration, if looping over several thresholds:
       Gl = -1
       Gl(0:nIndG) = Geno(:,l) 
@@ -896,6 +899,7 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   subroutine apply_edits(editFile, GenoOutFile, GenoOutFormat)
     use sqa_fileIO
+    use global_variables, ONLY: IdV
     
     character(len=*), intent(IN) :: editFile, GenoOutFile, GenoOutFormat
     integer :: i, l, x, N_edits
@@ -914,15 +918,18 @@ contains
         else
           print *, 'g_in in editfile does not match genotype matrix!'
           print *, 'at line ', x, ': ', dumC, ' in: ', g_in, ' out: ', g_out
+          stop  
         endif
       enddo   
     close(5)  
 
-    ! write to file
-    call writeGeno(Geno=transpose(geno), nInd=SIZE(geno,DIM=1), nSnp=SIZE(geno,DIM=2),&
-      ID=Pedigree(1:nIndG)%ID, FileName=GenoOutFile, FileFormat=GenoOutFormat)
+    ! write to file  (excl indiv 0)
+    call writeGeno(Geno=transpose(geno(1:,:)), nInd=SIZE(geno,DIM=1)-1, nSnp=SIZE(geno,DIM=2),&
+      ID=IdV, FileName=GenoOutFile, FileFormat=GenoOutFormat)
   
   end subroutine apply_edits
+  
+  
 
 
 !submodule (impute_fun) prob_ant_pos  !Gprob_mod   
@@ -1085,7 +1092,7 @@ contains
     character(len=*), intent(IN) :: lbl
     integer, intent(IN) :: lbl_i
     
-    if (any(logprob /= logprob) .or. any(logprob > 2*EPSILON(0d0)) .or. all(logprob < -HUGE(0d0))) then
+    if (any(logprob /= logprob) .or. any(logprob > sqrt(EPSILON(0d0))) .or. all(logprob < -HUGE(0d0))) then
       print *, ''
       print *, trim(lbl), ' not a valid probability! ', lbl_i
       write(*,'(10f9.4)') logprob
@@ -1111,9 +1118,8 @@ program main
   implicit none
   
  ! integer :: i
-  character(len=200) :: GenoFile, PedigreeFile, AFFile, GenoOutFile, LogFile
+  character(len=200) :: GenoFile, PedigreeFile, AFFile, GenoOutFile, EditsFile
   character(len=3) :: GenoInFormat, GenoOutFormat
-  character(len=nchar_ID), allocatable :: IdV(:)
   real :: Threshold_pedclean
   logical :: do_pedclean, do_pedigree
     
@@ -1125,31 +1131,38 @@ program main
   nIndG = SIZE(Geno, DIM=1) -1 ! dim 0:nIndG
   nSnp  = SIZE(Geno, DIM=2)
   
-  if (.not. quiet)  print *, 'initializing pedigree ...'
-  call init_pedigree(IdV)
+  if (do_pedclean .or. do_snpclean .or. do_impute) then
+    if (.not. quiet)  print *, 'initializing pedigree ...'
+    call init_pedigree(IdV)
+  endif
  
   if (.not. quiet)  call print_sumstats('IN') 
  
   if (do_pedigree .and. .not. quiet)  print *, 'reading pedigree file ... '
   if (do_pedigree) call read_pedigree(PedigreeFile)
   
-  allocate(AF(nSnp))
-  AF = getAF(AFFile) 
-  call PreCalcProbs(nSnp, Er, AF)
+  if (do_pedclean .or. do_snpclean .or. do_impute) then  ! not if do_read_edits
+    allocate(AF(nSnp))
+    AF = getAF(AFFile) 
+    call PreCalcProbs(nSnp, Er, AF)
+  endif
   
   if (do_pedclean) then
     if (.not. quiet)  print *, 'cleaning pedigree ... '   
-    call clean_pedigree('pedclean.log', Threshold_pedclean)
+    call clean_pedigree('pedclean.edits', Threshold_pedclean)
   else
     if (.not. quiet)  print *, 'skipping pedigree cleaning ...'
   endif
   
-  call init_matings()
-  
-  call clean_n_impute(LogFile)  ! , do_pedigree
-  
-  if (.not. quiet)  print *, 'writing new genotypes to file ...'
-  if (do_geno_out)  call apply_edits(LogFile, GenoOutFile, GenoOutFormat)
+  if (do_pedclean .or. do_snpclean .or. do_impute) then
+    call init_matings() 
+    call clean_n_impute(EditsFile)  ! , do_pedigree
+  endif
+
+  if (do_geno_out) then
+    if (.not. quiet)  print *, 'writing new genotypes to file ...'
+    call apply_edits(EditsFile, GenoOutFile, GenoOutFormat)
+  endif
   
   if (.not. quiet)  print *, 'done.'
   
@@ -1166,7 +1179,8 @@ contains
   subroutine read_args()
     use sqa_fileIO, only: valid_formats
     integer :: nArg, i, x
-    character(len=32) :: arg, argOption 
+    character(len=32) :: arg, argOption
+    logical :: only_read_edits    
     
     ! set defaults
     GenoFile = 'Geno'
@@ -1176,7 +1190,7 @@ contains
     AFFile = 'NoFile'
     GenoOutFile = 'Geno_imputed'
     GenoOutFormat = 'SEQ'
-    LogFile = 'imputation.log'
+    EditsFile = 'imputation.edits'
     Er = 0.001
     do_pedclean = .TRUE.
     Threshold_pedclean = 0.05
@@ -1190,6 +1204,7 @@ contains
     do_geno_out = .TRUE.
     do_probs_out = .FALSE.
     do_quick = .FALSE.
+    only_read_edits   = .FALSE.
     quiet = .FALSE.
   
     nArg = command_argument_count()
@@ -1203,7 +1218,10 @@ contains
         select case (arg)
           case ('--help')
             call print_help()
-            stop       
+            stop   
+
+          case ('--version')
+            print *, version
              
           case ('--geno', '--geno-in')  
             i = i+1
@@ -1303,12 +1321,14 @@ contains
           case ('--probs-out')
             do_probs_out = .TRUE.
          
-          case ('--log')
+          case ('--edits', '--edits-out')
             i = i+1
-            call get_command_argument(i, LogFile)
+            call get_command_argument(i, EditsFile)
             
-!         case ('--log-in')
-            ! TODO
+          case ('--edits-in')
+            i = i+1
+            call get_command_argument(i, EditsFile)
+            only_read_edits   = .TRUE.
 
           case ('--quiet')
             quiet = .TRUE.
@@ -1326,6 +1346,12 @@ contains
     if (do_quick) then
  !     do_pedclean = .FALSE.
       do_snpclean = .FALSE.
+    endif
+    
+    if (only_read_edits) then
+      do_pedigree = .FALSE.
+      do_impute = .FALSE.
+      do_geno_out = .TRUE.
     endif
     
     if (.not. do_pedigree) then
@@ -1377,11 +1403,12 @@ contains
                     '                        default: 0.0001'                    
     print '(a)',    '  --out <filename>     output file name, extension will be added. Default: Geno_imputed'
     print '(a)',    '  --outformat <x>      same options as for --informat. Default: SEQ'     
-    print '(a)',    '  --no-geno-out        no genotype output file with edits (only log, which will be',& 
+    print '(a)',    '  --no-geno-out        no genotype output file with edits (only imputation.edits file), which will be',& 
                     '                         possible to read in to apply the edits'
     print '(a)',    '  --probs-out          write all genotype probabilities to a text file, with 3 rows',&
                     '                         per SNP and 1 column per ID'
-    print '(a)',    '  --log <filename>     log file name. Default: Imputation_log.txt'
+    print '(a)',    '  --edits-out <filename>  file name for list with edits. Default: imputation.edits'
+    print '(a)',    '  --edits-in <filename>   edits file as input'
     print '(a)',    '  --quiet              suppress all messages'
   end subroutine print_help
   

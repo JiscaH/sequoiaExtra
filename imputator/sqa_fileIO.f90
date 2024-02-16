@@ -189,7 +189,7 @@ contains
     if (FileFormat == 'RAW') then
       nInd = nInd -1   ! header row
     endif
-    allocate(ID(nInd))
+    allocate(ID(1:nInd))
     ID = "NA"
     
     select case (FileFormat)
@@ -301,12 +301,16 @@ contains
             Two2One(l) = 0  
           case ('12')
             Two2One(l) = 1
+          case ('21')
+            Two2One(l) = 1
           case ('22')
             Two2One(l) = 2  
           case ('00')
             Two2One(l) = -9 
           case default  ! shouldn't happen, but treat as missing
-            Two2One(l) = -9    
+            Two2One(l) = -9 
+            print *, 'unexpected entry in genotype file for SNP ', l
+            stop
         end select   
       enddo   
     end function Two2One
@@ -319,7 +323,7 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   subroutine writeGeno(Geno, nInd, nSnp, ID, SNP_names, FileName, FileFormat, make_map)
     integer, intent(IN) :: nInd, nSnp
-    integer(kind=ishort), intent(IN) :: Geno(1:nSnp, 0:nInd)
+    integer(kind=ishort), intent(IN) :: Geno(1:nSnp, 1:nInd)
     character(len=nchar_ID), intent(IN) :: ID(nInd)
     character(len=nchar_ID), intent(IN), optional :: SNP_names(nSnp)
     logical, intent(IN), optional :: make_map
