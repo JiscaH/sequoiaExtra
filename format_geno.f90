@@ -484,6 +484,8 @@ subroutine Reformat
             Two2One(l) = 0  
           case ('12')
             Two2One(l) = 1
+          case ('21')
+            Two2One(l) = 1
           case ('22')
             Two2One(l) = 2  
           case ('00')
