@@ -10,6 +10,7 @@ module sqa_fileIO
   implicit none
    
   character(len=3), dimension(4) :: valid_formats = (/'SEQ', 'PED', 'RAW', 'LMT'/)
+  character(len=1), allocatable :: alleles(:,:)
   
 contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -120,7 +121,7 @@ contains
     integer :: nrow, i, maxRow, ios
     character(len=42) :: dumC
 
-    maxRow = 1e6  ! fail safe
+    maxRow = 1e8  ! fail safe
     nrow = 0
     open(unit=102, file=trim(FileName), status="old", action='read')
       do i=1, maxRow
@@ -163,16 +164,18 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ! read genotype file
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine readGeno(Geno,ID, SNP_names, FileName, FileFormat, transp)  
+  subroutine read_geno(Geno,ID, SNP_names, FileName, FileFormat, transp)  
     integer(kind=ishort), allocatable, intent(OUT) :: Geno(:,:)
     character(len=nchar_ID), allocatable, intent(OUT) :: ID(:), SNP_names(:)
     character(len=*), intent(IN) :: FileName
     character(len=3), intent(IN) :: FileFormat
     logical, intent(IN), optional :: transp   ! transpose matrix (default=yes)
-    integer :: nSnp, nInd, i, l, ios
-    integer(kind=ishort), allocatable :: G_int(:), G_duos(:), Geno_tmp(:,:)
+    integer :: nSnp, nInd, i, l, ios,m
+    integer(kind=ishort), allocatable :: G_int(:), Geno_tmp(:,:)
     character(len=LEN(FileName)+5) :: GenoFile
     character(len=2), allocatable :: G_char(:)
+    character(len=1), allocatable :: G_duos(:,:)
+    
     character(len=nchar_ID) :: dumC, dumV(4)
     logical :: do_transpose, mapfile_found
     
@@ -197,7 +200,7 @@ contains
         nSnp = FileNumCol(trim(GenoFile)) -1  ! column 1 = IDs
       case('PED')
         nSnp = (FileNumCol(trim(GenoFile)) -6)/2  ! columns FID-IID-sire-dam-sex-pheno
-        allocate(G_duos(nSnp*2))   ! 2 columns per SNP
+        allocate(G_duos(1:nInd, nSnp*2))   ! 2 columns per SNP
       case('RAW')
         nSnp = FileNumCol(trim(GenoFile), has_header=.TRUE.) -6
         allocate(G_char(nSnp))   ! uses NA for missing values
@@ -223,8 +226,7 @@ contains
           case ('SEQ')
             read (101,*,IOSTAT=ios)  Id(i), G_int
           case('PED')
-            read (101,*,IOSTAT=ios) dumC, Id(i), dumV, G_duos
-            G_int = Two2One(G_duos)
+            read (101,*,IOSTAT=ios) dumC, Id(i), dumV, G_duos(i,:)
           case('RAW')
             read (101,*,IOSTAT=ios) dumC, Id(i), dumV, G_char
             WHERE (G_char == 'NA')  G_char = '-9'
@@ -239,6 +241,10 @@ contains
         WHERE (G_int >= 0 .and. G_int <= 2)  Geno(i,:) = G_int     
       enddo
     close (101)
+    
+    if (FileFormat=='PED') then
+      call Two2One()
+    endif
     
     deallocate(G_int)
     if(allocated(G_duos))  deallocate(G_duos)
@@ -287,41 +293,59 @@ contains
   contains
     !~~~~~~~~~~~~~~
     ! From 2-columns-per-SNP to 1-column-per-SNP
-    function Two2One(G)  
-      integer(kind=ishort), intent(IN) :: G(0:(2*nSnp-1))
-      integer(kind=ishort) :: Two2One(0:(nSnp-1))
-      integer :: l,m
-      character(len=2) :: Gm
+    subroutine Two2One()
+      integer(kind=ishort), allocatable :: Gint(:)
+      character(len=1) :: valid_alleles(6), Gi(2)
+      character(len=1), allocatable :: Gl(:,:)
+      integer :: x,a,i
       
-      do l=0,(nSNP-1)
-        m = 2*l
-        write(Gm,'(2i1)')  G(m:(m+1))
-        select case (Gm)
-          case ('11')
-            Two2One(l) = 0  
-          case ('12')
-            Two2One(l) = 1
-          case ('21')
-            Two2One(l) = 1
-          case ('22')
-            Two2One(l) = 2  
-          case ('00')
-            Two2One(l) = -9 
-          case default  ! shouldn't happen, but treat as missing
-            Two2One(l) = -9 
-            print *, 'unexpected entry in genotype file for SNP ', l
-            stop
-        end select   
-      enddo   
-    end function Two2One
-    
-  end subroutine readGeno
+      valid_alleles = (/'A','C','T','G','1','2'/)
+      allocate(alleles(2,nSnp))
+      alleles = '0'
+      allocate(Gl(2,1:nInd))
+      allocate(Gint(1:nInd))
+      
+      do l=1, nSnp
+        m = 2*(l-1)+1
+        Gl = transpose(G_duos(:,m:(m+1)))
+             
+        a = 0
+        do x=1,6
+          if (any(Gl == valid_alleles(x))) then
+            a = a+1
+            alleles(a,l) = valid_alleles(x)
+            if (a==2)  exit
+          endif
+        enddo
+      
+        ! TODO: try various alternatives to find fastest way
+        do i=1,nInd
+          Gi = Gl(:,i)
+          if (all(Gi == '0')) then
+            Gint(i) = -1
+          else if (all(Gi==alleles(1,l))) then
+            Gint(i) = 0
+          else if (all(Gi==alleles(2,l))) then
+            Gint(i) = 2
+          else if (any(Gi==alleles(1,l)) .and. any(Gi==alleles(2,l))) then
+            Gint(i) = 1
+          else  ! shouldn't happen
+            Gint(i) = -1
+          endif
+        enddo 
+        Geno(1:nInd,l) = Gint
+      enddo      
+ !     print *, 'genotype counts:', COUNT(Gint==0), COUNT(Gint==1), COUNT(Gint==2), COUNT(Gint==-1)
+      
+    end subroutine Two2One
+
+  end subroutine read_geno
   
   
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ! write genotype file
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine writeGeno(Geno, nInd, nSnp, ID, SNP_names, FileName, FileFormat, make_map)
+  subroutine write_geno(Geno, nInd, nSnp, ID, SNP_names, FileName, FileFormat, make_map)
     integer, intent(IN) :: nInd, nSnp
     integer(kind=ishort), intent(IN) :: Geno(1:nSnp, 1:nInd)
     character(len=nchar_ID), intent(IN) :: ID(nInd)
@@ -332,6 +356,7 @@ contains
     character(len=LEN(FileName)+5) :: GenoFile
     character(len=nchar_ID) :: SNP_names_out(nSnp)
     character(len=2), allocatable :: G_char(:)
+    character(len=1), allocatable :: G_duos(:,:)
     integer :: i, l
     integer(kind=ishort), allocatable :: G_int(:)
     logical :: did_warn, do_make_map
@@ -361,6 +386,11 @@ contains
       enddo    
     endif
     
+    if (FileFormat=='PED') then
+      allocate(G_duos(1:(nSnp*2), 1:nInd))     
+      call One2Two()
+    endif
+    
     did_warn = .FALSE.
 
     open (unit=202, file=trim(GenoFile), status='unknown', action='write')
@@ -374,7 +404,7 @@ contains
           case ('SEQ')
             write(202, '(a40, 100000i3)') Id(i), G_int
           case('PED')
-            write(202, '(i3,2x,a40,4i3,2x, 200000i2)') 0, Id(i), 0,0,0,0, One2Two(G_int)
+            write(202, '(i3,2x,a40,4i3,2x, 200000a2)') 0, Id(i), 0,0,0,-9, G_duos(:,i) 
           case('RAW')
             do l=1,nSnp
               write(G_char(l), '(i2)')  G_int(l)
@@ -417,27 +447,47 @@ contains
   contains
     !~~~~~~~~~~~~~~
     ! From 1-column-per-SNP to 2-columns-per-SNP
-    function One2Two(G)  
-      integer(kind=ishort), intent(IN) :: G(0:(nSnp-1))
-      integer(kind=ishort) :: One2Two(0:(nSnp*2-1))
-      integer :: l,m
+    subroutine One2Two() 
+      character(len=1), allocatable :: Gl(:,:)
+      integer :: l,m,i
       
-      do l=0,(nSNP-1)
-        m = 2*l
-        select case (G(l))
-          case (0)
-            One2Two(m:(m+1)) = (/1_ishort,1_ishort/)  
-          case (1)
-            One2Two(m:(m+1)) = (/1_ishort,2_ishort/)  
-          case (2)
-            One2Two(m:(m+1)) = (/2_ishort,2_ishort/)   
-          case default  ! missing
-            One2Two(m:(m+1)) = (/0_ishort,0_ishort/)   
-        end select   
-      enddo   
-    end function One2Two
+      allocate(Gl(2,1:nInd))
+      
+      do l=1, nSnp
+        m = 2*(l-1)+1
+        
+        if (allocated(alleles)) then
+          do i=1,nInd
+            select case (Geno(l,i))
+              case (0)
+                Gl(:,i) = (/alleles(1,l), alleles(1,l)/)
+              case (1)
+                Gl(:,i) = (/alleles(1,l), alleles(2,l)/) 
+              case (2)
+                Gl(:,i) = (/alleles(2,l), alleles(2,l)/)
+              case default 
+                Gl(:,i) = (/'0','0'/)     ! missing
+            end select
+          enddo
+        else
+          do i=1,nInd
+            select case (Geno(l,i))
+              case (0)
+                Gl(:,i) = (/'1','1'/)
+              case (1)
+                Gl(:,i) = (/'1','2'/) 
+              case (2)
+                Gl(:,i) = (/'2','2'/)
+              case default 
+                Gl(:,i) = (/'0','0'/)     ! missing
+            end select   
+          enddo
+        endif
+        G_duos(m:(m+1),:) = Gl
+      enddo      
+    end subroutine One2Two
   
-  end subroutine writeGeno
+  end subroutine write_geno
   
 
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

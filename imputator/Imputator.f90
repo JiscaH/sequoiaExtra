@@ -7,7 +7,7 @@
 ! This code is available under GNU General Public License v3
 !
 ! Compilation: 
-! gfortran -O3 sqa_general.f90 sqa_fileIO.f90 Imputator_v0.2.3.f90 -o imputator
+! gfortran -O3 sqa_general.f90 sqa_fileIO.f90 Imputator.f90 -o imputator
 !
 !===============================================================================
 
@@ -15,204 +15,143 @@ module global_variables
   use sqa_general, ONLY: ishort, nchar_ID
   implicit none
 
-  character(len=30), parameter :: version = "Imputator v0.2.3 (16 Feb 2024)"
-  integer :: nIndG, nInd_max, nIndT, nSnp, nMatings
-  integer(kind=ishort), allocatable, target :: Geno(:,:)
+  character(len=30), parameter :: version = "Imputator v0.3.2 (28 Feb 2024)"
+  integer, parameter :: chunk_size_large = 100, chunk_size_small=10
+  integer :: nIndG, nInd_max, nIndT, nSnp, nMatings, nMat_max
+  integer(kind=ishort), allocatable :: Geno(:,:)
+  integer, allocatable :: indiv2mating(:)
   character(len=nchar_ID), allocatable :: IdV(:), SNP_names(:)
-  double precision :: Er
   double precision, allocatable :: AF(:)
   logical :: quiet
   
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  ! component type of pedigree vector
+  ! component type of population vector
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   type individual
     integer :: index
     character(len=nchar_ID) :: ID='NA'
     integer :: sex=3  ! 1=female, 2=male, 3=unknown, 4=hermaphrodite
-    integer, dimension(2) :: parent = 0   ! dam, sire
-    integer :: nMates = 0
-    integer, allocatable :: matings_m(:)  ! index in matings array of mates & offspring
- !   integer :: parent_m = 0   !  index in matings array of parents & full siblings
-    type(matepair), pointer :: parentpair => null()
+!    integer :: parent_m = 0  !  matingnode with its parents
+    integer, dimension(:), pointer :: offspring_m => null()  ! matingnodes with its offspring
     ! TODO: birth year 
   end type individual
   
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  ! component type of matings vector
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  type matepair
+  type matingnode
     integer :: index
-    integer :: nOffspring = 0, parent_q(2) = 0   ! parent_i = (/dam_ped_index, sire_ped_index/)
-    integer, allocatable :: offspring_q(:)
-  end type matepair
+    integer :: parent(2) = 0
+    integer, dimension(:), pointer :: offspring => null()  ! pop individual indices of offspring
+  end type matingnode
+  
+end module global_variables 
 
-end module global_variables
-
+!===============================================================================
 !===============================================================================
 
 module pedigree_fun
-  use sqa_general, ONLY: chunk_size_large, nchar_ID
-  use global_variables, ONLY: nIndG, nIndT, nInd_max, nMatings, individual, matepair
+  ! TODO: separate source file
+  use sqa_general, ONLY: nchar_ID
+  use global_variables, ONLY: nIndG, nIndT, nInd_max, nMatings, individual, &
+    chunk_size_small, chunk_size_large, nMat_max, matingnode, indiv2mating  ! , mating2parent
   implicit none
-   
-  type(individual), allocatable, target :: pedigree(:)
-  type(individual), target, private :: indiv0  
-  type(matepair), allocatable, target :: matings(:)
   
-  private :: ped_add, grow_pedigree
+  type(individual), allocatable, target :: pop(:)  
+  type(matingnode), allocatable, target :: pedigree(:)
+  integer, allocatable, private :: ped_array(:,:)
+  
+  ! TODO: set private/public
   
 contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  ! initialise pedigree with individuals read from genotype file
+  ! get all locations of value in vector  (PACK is slow?)
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine init_pedigree(IdV)  
+  pure function get_locs(vector, lowerb, upperb, value)
+    integer, intent(IN) :: lowerb, upperb, value
+    integer, intent(IN) :: vector(lowerb:upperb)
+    integer, allocatable :: get_locs(:), v_indx(:)
+    integer :: x
+    
+    allocate(v_indx(lowerb:upperb))
+    v_indx = (/ (x, x=lowerb, upperb) /)
+    get_locs = PACK(v_indx, MASK = vector == value)
+  
+  end function get_locs
+
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! initialise population with individuals read from genotype file
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  subroutine init_pop(IdV)  
     character(len=nchar_ID), intent(IN) :: IdV(nIndG)
     integer :: i
     
-    indiv0 = individual(index=0)  
-    nInd_max = nIndG
-    nIndT = nIndG
-    allocate(pedigree(0:nInd_max))      
+    allocate(pop(0:nIndG)) 
+    pop(0) = individual(index=0, ID='NA')
+    allocate(pop(0)%offspring_m(0))
     do i=1,nIndG
-      call ped_add(individual(index=i, ID=IdV(i), sex=3))
-    enddo
-  end subroutine init_pedigree
-  
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  ! add individuals to pedigree; only at initalisation. no parents.
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine ped_add(ind_new)
-    type(individual), intent(IN) :: ind_new  
-    integer :: i
-    
-    i = ind_new%index 
-    
-    if (i > nInd_max) then
-      call grow_pedigree()  ! increase pedigree with another chunk
-    endif
-    if (i == nIndT +1) then
-      nIndT = nIndT +1
-    else if (i > nIndT) then
-      stop 'ped_add: invalid index'
-    endif
-        
-    pedigree(i) = ind_new
-    
-  end subroutine ped_add
-  
-  
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  ! increase pedigree size by chunk_size_large
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine grow_pedigree()
-    type(individual), allocatable :: tmp(:)
-    
-    allocate(tmp(0:(nInd_max + chunk_size_large)))
-    tmp(0:nInd_max) = pedigree
-    call move_alloc(tmp, pedigree)  ! from, to
-    nInd_max = nInd_max + chunk_size_large 
-    ! TODO: also grow other arrays
-  end subroutine grow_pedigree
-  
-  
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  ! for individual with index iq, get index of dam (p=1) or sire (p=2)
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  pure function get_par(iq, p) 
-    integer :: get_par
-    integer, intent(IN) :: iq  ! focal (offspring) individual index
-    integer, intent(IN) :: p  ! parent sex: 1=dam, 2=sire
-    
-    get_par = pedigree(iq)%parent(p)
-  
-  end function get_par
-  
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  ! for individual with index i, update dam (p=1) or sire (p=2) in pedigree
-  ! to individual with index par_q
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine set_par(iq, par_q, p)
-    integer, intent(IN) :: iq, par_q
-    type(individual), pointer :: par
-    integer, intent(IN), optional :: p
-    integer :: pp
-
-    if (par_q == 0) then
-      if (.not. present(p)) then
-        stop 'set_par: if par_q is 0, p must be provided'
-      else
-        pp = p
-      endif
-    else 
-      par => pedigree(par_q)
-      if (present(p)) then
-        if (any((/1,2/) == par%sex) .and. p/=par%sex) then
-          stop 'set_par: parent sex does not match p'
-        else
-          pp = p
-          if (.not. any((/1,2/) == par%sex)) then
-            par%sex = p
-          endif
-        endif
-      else
-        if (.not. any((/1,2/) == par%sex)) then
-          stop 'set_par: parent sex must be 1 or 2, or p provided'
-        else
-          pp = par%sex
-        endif
-      endif
-    endif
-    
-    if (pp==1 .or. pp==2) then
-      Pedigree(iq)%parent(pp) = par_q
-    else
-      stop 'set_par: p must be 1 (dam) or 2 (sire)'
-    endif
-    
-    ! TODO: check: does matepair pointer get automatically updated?
-    
-  end subroutine set_par
-
+      pop(i) = individual(index=i, ID=IdV(i))
+    enddo   
+    nInd_max = nIndG
+    nIndT = nIndG      
+    allocate(ped_array(2,1:nInd_max))
+    ped_array = 0
+  end subroutine init_pop
 
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  ! read pedigree from file & update pedigree array
+  ! read pedigree from file & init parent array
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   subroutine read_pedigree(FileName) 
+    ! TODO: speed up
     use sqa_fileIO, ONLY: checkFile, IOstat_handler, FileNumRow
+    
     character(len=*), intent(IN) :: FileName
-    integer :: i, k, IOerr, nIndP, focal_index, parent_index
+    integer :: i,x,k, ios, nIndP, par_i, r, nInd_R(3)
     integer, parameter :: no_index=-999
-    character(len=nchar_ID) :: focal_id, parent_id(2)
+    character(len=nchar_ID), allocatable :: names_pedigree(:,:)
     
-    call CheckFile(FileName)
-    
+                                           
+    call CheckFile(FileName)    
     nIndP = FileNumRow(trim(FileName)) -1  ! 1st row = header
-
+    allocate(names_pedigree(3,nIndP))
+    
     open(unit=103, file=trim(FileName), status="old")
       read(103,*)   ! header                              
-      do i=1,nIndP
-        read(103, *,IOSTAT=IOerr)  focal_id, parent_id
-        if (IOerr /= 0)  call IOstat_handler(IOerr, i, FileName)
-        focal_index = get_index(focal_id)
-        if (focal_index == no_index) then
-          call ped_add(individual(index=nIndT+1, ID=focal_id))
-          focal_index = nIndT   ! nIndT updated by ped_add
-        endif
-        do k=1,2
-          parent_index = get_index(parent_id(k))
-          if (parent_index == 0)  cycle
-          if (parent_index == no_index) then
-            call ped_add(individual(index=nIndT+1, ID=parent_id(k)))
-            parent_index = nIndT
-          endif
-          call set_par(focal_index, parent_index, k)
-        enddo  
+      do x=1,nIndP
+        read(103, *,IOSTAT=ios)  names_pedigree(:,x)
+        if (ios /= 0)  call IOstat_handler(ios, x, FileName)
       enddo
     close(103)
     
-    
+    ! add parents of genotyped individuals only + grandparents (= parents of those added in R1)
+    nInd_R = nIndG
+    do r=1,2
+      do x=1,nIndP
+        i = get_index(names_pedigree(1,x))
+        if (i <= 0 .or. i>nInd_R(r))  cycle  ! not genotyped (R1) / not parent-of-genotyped (R2)
+        do k=1,2
+          par_i = get_index(names_pedigree(1+k,x))
+          if (par_i == 0)  cycle
+          if (par_i == no_index) then  
+            call pop_add(individual(index=nIndT+1, ID=names_pedigree(1+k,x), sex=k))
+            par_i = nIndT
+          endif
+          ped_array(k,i) = par_i
+          call set_sex(par_i, k) 
+        enddo
+      enddo
+      nInd_R(r+1) = nIndT   ! nInd + individuals added in round 1 
+    enddo
+   
+    ! print *, 'nInd_R: ', nInd_R
+    ! print *, '# parents of genotyped indivs: ', nIndG, COUNT(ped_array(1,1:nIndG)/=0), COUNT(ped_array(2,1:nIndG)/=0)
+    ! print *, '# parents of non-genotyped indivs: ', nInd_R(2)-nIndG, &
+      ! COUNT(ped_array(1,(nIndG+1):nInd_R(2))/=0), COUNT(ped_array(2,(nIndG+1):nInd_R(2))/=0)
+    ! print *, '# parents of those: ', nInd_R(3)-nInd_R(2), &
+      ! COUNT(ped_array(1,(nInd_R(2)+1):nInd_R(3))/=0), COUNT(ped_array(2,(nInd_R(2)+1):nInd_R(3))/=0)
+   
+    deallocate(names_pedigree)
+  
+                       
   contains
+    !~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ! get pedigree index (=genotype row number, if any) for a specific ID
     pure function get_index(this_ID)
       integer :: get_index
@@ -221,128 +160,333 @@ contains
       
       if (this_ID == 'NA' .or. this_ID=='0') then
         get_index = 0
-        return
+      else 
+        get_index = no_index
+        if (any(pop%ID == this_id)) then    
+          do i=1,nIndT
+            if (pop(i)%ID == this_ID) then
+              get_index = i
+              return
+            endif
+          enddo
+        endif
       endif
       
-      get_index = no_index
-      do i=1,nIndT
-        if (Pedigree(i)%ID == this_ID) then
-          get_index = i
-          return
-        endif
-      enddo   
     end function get_index
-
-  end subroutine read_pedigree
-
-
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  ! initialise vector with all unique dam-sire pairings & resulting offspring 
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine init_matings()
-    use sqa_general, ONLY: chunk_size_small
-    integer :: i,j,m
-    type(matepair), allocatable, target :: tmp(:)
-    logical :: pair_exists
     
-    allocate(tmp(nIndT))   ! no. pairs < nIndT
-         
-    m=0
-    do i=1,nIndT
-      ! do not include founders as offspring of a unique pairing
-      if (all(pedigree(i)%parent == 0))  cycle
-      if (m==0 .or. any(pedigree(i)%parent == 0)) then  
-        ! either parent is NA: always a unique pair
-        m = m+1
-        tmp(m) = matepair(index=m, parent_q = pedigree(i)%parent, nOffspring=1)
-        allocate(tmp(m)%offspring_q(chunk_size_small))
-        tmp(m)%offspring_q = 0
-        tmp(m)%offspring_q(1) = i
-!        pedigree(i)%parent_m = m
-      else 
-      ! both parents are known: check if pair already exists in list
+    !~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ! add new individual to the population
+    subroutine pop_add(ind_new)
+      type(individual), intent(IN) :: ind_new  
+      integer :: i
+      
+      i = ind_new%index
+      if (i >= nInd_max) then
+        call grow_pop()
+      endif
+      
+      if (i == nIndT +1) then
+        nIndT = nIndT +1
+      else if (i > nIndT) then
+        stop 'pop_add: invalid index'
+      endif
+      
+      pop(i) = ind_new
+      
+    end subroutine pop_add
+   
+    !~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ! increase population size by chunk_size_large
+    subroutine grow_pop()
+      type(individual), allocatable :: tmp_pop(:)
+      integer, allocatable :: tmp_ped_array(:,:)
+
+      allocate(tmp_pop(0:(nInd_max + chunk_size_large)))
+      tmp_pop(0:nInd_max) = pop
+      call move_alloc(tmp_pop, pop)  ! from, to   
+      
+      allocate(tmp_ped_array(2,1:(nInd_max + chunk_size_large)))
+      tmp_ped_array = 0
+      tmp_ped_array(:,1:nInd_max) = ped_array
+      call move_alloc(tmp_ped_array, ped_array)
+      
+      nInd_max = nInd_max + chunk_size_large
+
+    end subroutine grow_pop
+    
+  end subroutine read_pedigree
+  
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! initialise pedigree & indiv2mating arrays
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  subroutine init_pedigree()
+    integer, allocatable :: m2p(:,:)  ! temp stand-in for mating2parent
+    integer :: i,m, par(2),p, n_off
+    logical :: pair_exists
+    integer, allocatable :: i_indx(:), m_indx(:) 
+    
+    allocate(m2p(2,0:nIndT))  ! max. no unique pairs < nIndT
+    m2p = 0
+    allocate(indiv2mating(0:nIndT))  
+    indiv2mating = 0 
+    
+    if (.not. allocated(ped_array)) then  ! no pedigree read from file
+      allocate(ped_array(2,1:nIndG))
+      ped_array = 0
+    endif
+    
+    nMatings = 0  
+    do i=1, nIndG
+      par = ped_array(:,i)
+      if (all(par==0))  cycle  ! mating=0
+      if (any(par==0)) then    ! always unique mating
+        nMatings = nMatings +1
+        m2p(:,nMatings) = par
+        m = nMatings
+      else
         pair_exists = .FALSE.
-        do j=1,m
-          if (all(pedigree(i)%parent == tmp(j)%parent_q)) then
+        do m=1,nMatings
+          if (all(par == m2p(:,m))) then
             pair_exists = .TRUE.
             exit
           endif
         enddo
         if (.not. pair_exists) then
-          m = m+1
-          j = m
-          tmp(m) = matepair(index=m, parent_q = pedigree(i)%parent)
-          allocate(tmp(m)%offspring_q(chunk_size_small))
-          tmp(m)%offspring_q = 0
+          nMatings = nMatings +1
+          m2p(:,nMatings) = par
+          m = nMatings
         endif
-        if (pair_exists) then
-          if (modulo(tmp(j)%nOffspring, chunk_size_small)==0) then  ! increase size
-            call grow_alloc_V(tmp(j)%offspring_q, chunk_size_small)
-          endif
-        endif       
-        tmp(j)%nOffspring = tmp(j)%nOffspring +1
-        tmp(j)%offspring_q( tmp(j)%nOffspring ) = i
-!        pedigree(i)%parent_m = j
       endif
+!        pop(i)%parent_m = m
+      indiv2mating(i) = m
+    enddo
+  
+    ! create pedigree with matingnodes: 2 parents + >=1 offspring
+    nMat_max = nMatings
+    allocate(i_indx(0:nIndT))
+    i_indx = (/ (i,i=0,nIndT) /)
+    allocate(pedigree(0:nMat_max))  ! allocated by init_pop  (also needed when .not. do_pedigree)   
+    pedigree(0) = matingnode(index=0)
+    allocate(pedigree(0)%offspring(0))
+    do m=1,nMatings
+      pedigree(m) = matingnode(index=m, parent = m2p(:,m))
+      n_off = COUNT(indiv2mating == m)
+      allocate(pedigree(m)%offspring(n_off))
+      pedigree(m)%offspring = PACK(i_indx, MASK = indiv2mating==m)
+    enddo
+    deallocate(m2p)
+
+    ! add matingnode indices to pop individual nodes, for quicker look-up
+    allocate(m_indx(0:nMatings))
+    m_indx = (/ (i,i=0,nMatings) /)
+    do i=1,nIndT
+      p = pop(i)%sex
+      if (p==3) then
+        n_Off = 0
+      else
+        n_off = COUNT(pedigree%parent(p) == i)
+      endif
+      allocate(pop(i)%offspring_m(n_off))
+      if (n_off>0)  pop(i)%offspring_m = PACK(m_indx, MASK = pedigree%parent(p)==i)
     enddo
     
-    nMatings = m
-    allocate(matings(0:nMatings))   
-    matings(0) = matepair(index=0)
-    matings(1:nMatings) = tmp(1:nMatings)
-    deallocate(tmp)
-    
-    call matings_to_pedigree()
-    
-  contains
-    !~~~~~~~~~~~~~~~~~~~~~~ 
-    ! write matings to pedigree individuals
-    subroutine matings_to_pedigree()
-      integer :: m,k,j,n
-    
-      ! parents: write nMates & matings_m
-      do m=1, nMatings
-        do k=1,2
-          if (matings(m)%parent_q(k) == 0) cycle
-          j = matings(m)%parent_q(k)
-          n = pedigree(j)%nMates +1
-          pedigree(j)%nMates = n
-          if (n==1) then
-            allocate(pedigree(j)%matings_m(chunk_size_small))
-            pedigree(j)%matings_m = 0
-          endif
-          if (modulo(n, chunk_size_small)==0) then
-            ! increase size of pedigree(j)%matings_m
-            call grow_alloc_V(pedigree(j)%matings_m, chunk_size_small)
-          endif
-          pedigree(j)%matings_m(n) = m
-        enddo
-      enddo
-      
-      ! offspring: point to parentpair
-      do m=1,nMatings
-        do j=1, matings(m)%nOffspring
-          pedigree(matings(m)%offspring_q(j))%parentpair => matings(m)
-        enddo
-      enddo 
-    
-    end subroutine matings_to_pedigree
-
-  end subroutine init_matings
+    deallocate(ped_array)
+  end subroutine init_pedigree 
   
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine grow_alloc_V(V, chunk_size)
-    integer, allocatable, intent(INOUT) :: V(:)    ! pointer? class(*)?
-    integer, intent(IN) :: chunk_size
-    integer, allocatable :: tmp(:)
+  
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! check if sex is consistent across pedigree; set sex if currently unknown
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  subroutine set_sex(fcl_i, p)  
+    integer, intent(IN) :: fcl_i, p  ! p=supposed sex
+    integer :: cur_sex
     
-    allocate(tmp(LBOUND(V,1) : (UBOUND(V,1) + chunk_size)))
-    tmp(LBOUND(V,1) : UBOUND(V,1)) = V
-    call move_alloc(tmp, V)   ! from, to 
-  end subroutine grow_alloc_V
+    if (.not. any((/1,2/) == p))  stop 'set_sex: p must be 1 (dam) or 2 (sire)'   
+    cur_sex = pop(fcl_i)%sex
+    if (any((/1,2/) == cur_sex) .and. p/=cur_sex)  stop 'set_par: parent sex does not match p'
+    if (cur_sex==3)  pop(fcl_i)%sex = p    
+  end subroutine set_sex   
 
+  
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! for individual with index fcl_i, update dam (p=1) or sire (p=2) in pedigree
+  ! to individual with index par_i
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  subroutine set_par(fcl_i, par_i, p)
+    integer, intent(IN) :: fcl_i, par_i
+    integer, intent(IN), optional :: p
+    integer :: pp, par_sex, m_old, m_new, nOff,j, curpar(2)
+    logical :: pair_exists
+
+    if (par_i == 0) then
+      if (.not. present(p))  stop 'set_par: if par_i is 0, p must be provided'
+      pp = p
+    else 
+      par_sex = pop(par_i)%sex 
+      ! check if sex matches
+      if (present(p)) then
+        if (any((/1,2/) == par_sex) .and. p/=par_sex)  stop 'set_par: parent sex does not match p'
+        pp = p
+        if (par_sex==3)  pop(par_i)%sex = p
+      else
+        if (.not. any((/1,2/) == par_sex))  stop 'set_par: parent sex must be 1 or 2, or p provided'
+        pp = par_sex
+      endif
+    endif
+    if (.not. any((/1,2/) == pp))  stop 'set_par: p must be 1 (dam) or 2 (sire)'
+       
+!    m_old = pop(fcl_i)%parent_m
+    m_old = indiv2mating(fcl_i)
+    curpar = pedigree(m_old)%parent
+    m_new = m_old
+    if (m_old == 0) then
+      if (par_i/=0) then
+        nMatings = nMatings +1
+        if (nMatings >= nMat_max)  call grow_pedigree()
+        m_new = nMatings   
+      endif  ! else nothing changes
+    else if (curpar(3-pp)/=0 .and. curpar(pp)==0) then  ! there is a co-parent
+      m_new = m_old
+    else if (curpar(3-pp)==0 .and. curpar(pp)/=0) then
+      if (par_i==0) then
+        m_new = 0
+ !       deallocate(pedigree(m_old)%offspring)
+        pedigree(m_old)%offspring => null()
+        allocate(pedigree(m_old)%offspring(0))
+ !       call remove_mating(m_old)  ! remove m_old & shift all subsequent ones in pedigree  TODO
+      endif
+    else ! all(mating2parent(:, m)/=0)
+      nOff = SIZE(pedigree(m_old)%offspring)  ! COUNT(pop%parent_m == m_old)
+      ! if nOff==1 no full siblings: change parents of mating
+      ! with full siblings: move individual to a new/different mating
+      if (nOff > 1) then  
+        pair_exists = .FALSE.
+        if (par_i/=0) then
+          do j=1,nMatings
+            if (pedigree(j)%parent(pp)==par_i .and. pedigree(j)%parent(3-pp)==curpar(3-pp)) then
+              pair_exists = .TRUE.
+              exit
+            endif
+          enddo
+          if (pair_exists) m_new = j
+        endif
+        if (.not. pair_exists) then  ! make a new mating pair
+          nMatings = nMatings +1
+          if (nMatings >= nMat_max)  call grow_pedigree()
+          m_new = nMatings
+          pedigree(nMatings)%parent(3-pp) = curpar(3-pp)  ! bring old co-parent along
+        endif
+      endif
+    endif
+    
+    if (m_new/=0)  pedigree(m_new)%parent(pp) = par_i
+!    pop(fcl_i)%parent_m = m_new 
+    indiv2mating(fcl_i) = m_new
+    if (m_new == nMatings) then
+      allocate(pedigree(m_new)%offspring(1))
+      pedigree(m_new)%offspring = fcl_i
+ !     call add_mating(par_i, m_new)
+     if (par_i/=0) then
+        pop(par_i)%offspring_m = get_locs(vector=pedigree%parent(pp), lowerb=0, &
+            upperb=nMatings, value=par_i)
+      endif
+    else
+      if (m_new/=0) then 
+        ! call add_offspring(m_new, fcl_i)    ! TODO: speed test
+        pedigree(m_new)%offspring = get_locs(vector=indiv2mating, lowerb=0, upperb=nIndT, value=m_new)
+      endif     
+    endif
+    
+    ! THIS IS A PAIN, KEEPING TRACK OF THINGS IN TWO DIFFERENT ARRAYS
+    ! USE POINTERS; SHOULD GET UPDATED AUTOMAGICALLY? OR SOME OTHER WAY THAT IS 
+    ! FAST & CLEAR & LOW MEMORY
+     
+  contains
+    ! !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ! ! add individual fcl_i as offspring to matingnode m
+    ! subroutine add_offspring(m, fcl_i)
+      ! integer, intent(IN) :: m, fcl_i
+      ! integer :: nOff
+      ! integer, allocatable :: off_tmp(:)
+      
+      ! nOff = SIZE(pedigree(m)%offspring)
+ ! !     pedigree(m)%offspring(nOff +1) = fcl_i
+      ! allocate(off_tmp(nOff+1))
+      ! off_tmp(1:nOff) = pedigree(m)%offspring
+      ! off_tmp(nOff+1) = fcl_i
+! !      move_alloc(off_tmp, pedigree(m)%offspring)  ! Error: Unclassifiable statement
+      ! deallocate(pedigree(m)%offspring)
+      ! allocate(pedigree(m)%offspring(nOff+1))
+      ! pedigree(m)%offspring = off_tmp
+      ! deallocate(off_tmp)
+    ! end subroutine add_offspring
+    
+    
+    !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ! increase size of pedigree by another chunk
+    subroutine grow_pedigree()
+      type(matingnode), allocatable :: tmp(:)
+
+      allocate(tmp(0:(nMat_max + chunk_size_small)))
+      tmp(0:nMat_max) = pedigree
+      call move_alloc(tmp, pedigree)  ! from, to
+      nMat_max = nMat_max + chunk_size_small     
+    end subroutine grow_pedigree
+
+  end subroutine set_par
+  
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! for individual with index fcl_i, get dam + sire
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    pure function get_par(fcl_i) result(par)
+      integer, intent(IN) :: fcl_i
+      integer :: par(2), m
+      
+      m = indiv2mating(fcl_i)
+      par = pedigree(m)%parent
+
+    end function get_par
+  
+  ! no other getters: big decrease in runtime
+  
+    
+  
+  ! !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! ! keep only genotyped individuals + their parents (+ grandparents?)
+  ! !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! subroutine prune_pedigree()
+    ! logical, allocatable :: keep_i(:), keep_m(:)
+    ! integer :: i,m,j
+    ! type(individual), allocatable :: tmp_pop(:)
+      
+    ! allocate(keep_m(0:nMatings))
+    ! keep_m = .FALSE.
+    ! keep_m(0) = .TRUE.
+    ! do m=1,nMatings
+      ! if (any(pedigree(m)%offspring <= nIndG))  keep_m(m) = .TRUE.
+    ! enddo
+    
+ ! !   print *, 'nMatings: ', nMatings, ' keep: ', COUNT(keep_m)
+    
+    ! ! keep if non-genotyped individual has at least 1 non-genotyped offspring
+    ! allocate(keep_i((nIndG+1):nIndT))
+    ! keep_i = .FALSE.
+    ! do i=nIndG+1, nIndT
+      ! if (any(keep_m .and. (pedigree%parent(1) == i .or. pedigree%parent(2) == i))) then
+        ! keep_i(i) = .TRUE.
+      ! endif    
+    ! enddo   
+    
+ ! !   print *, 'n non-genotyped: ', nIndT-nIndG, ' keep: ', COUNT(keep_i)
+    
+    ! allocate(tmp_pop(0:(nIndG+COUNT(keep_i))))
+  
+  
+    
+  
+  ! end subroutine prune_pedigree
+  
 end module pedigree_fun
-
 
 
 !===============================================================================
@@ -350,7 +494,7 @@ end module pedigree_fun
 
 module check_pedigree
   use sqa_general, ONLY: OcA, AHWE, OHWE, OKA2P, AKAP, OKAP
-  use global_variables, ONLY: nSnp, Er, AF, Geno
+  use global_variables, ONLY: nSnp, AF, Geno
   implicit none
   private
   public:: clean_pedigree
@@ -444,12 +588,12 @@ contains
   subroutine clean_pedigree(EditsFileName, Threshold)
     ! NOTE: only checking genotyped-genotyped parent-offspring pairs
     use global_variables, ONLY : nIndG
-    use pedigree_fun, ONLY: pedigree, get_par
+    use pedigree_fun, ONLY: pop, get_par, set_par
     
     character(len=*), intent(IN) :: EditsFileName
     real, intent(IN) :: Threshold
-    integer :: i, k, j
-    double precision :: probs_ij(nRel)
+    integer :: i, k, par(2)
+    double precision :: probs_ip(nRel)
     
     call init_pairLL()
     
@@ -458,34 +602,30 @@ contains
       write(42, '(2a40, a12, 6(5X, a7))') 'id', 'parent_id', 'parent_sex', &
         'prob_S ', 'prob_PO', 'prob_FS', 'prob_GP', 'prob_HA', 'prob_UU'
       do i=1,nIndG  
+        par = get_par(i)
         do k=1,2   ! dam,sire
-          j = get_par(i, k)
-          if (j==0 .or. j > nIndG)  cycle   ! parent unknown / not genotyped
-          
-          probs_ij = R_probs(i,j)
-          
-          if (probs_ij(PO_rel) < Threshold) then 
-            write(42, '(2a40, i12, 6(5X, f7.4))')  Pedigree(i)%ID, Pedigree(j)%ID, k, probs_ij
-            pedigree(i)%parent(k) = 0
-            ! NOTE: this is done before matingpairs are initialised
+          if (par(k)==0 .or. par(k) > nIndG)  cycle   ! parent unknown / not genotyped        
+          probs_ip = R_probs(i,par(k))
+          if (probs_ip(PO_rel) < Threshold) then 
+            write(42, '(2a40, i12, 6(5X, f7.4))')  pop(i)%ID, pop(par(k))%ID, k, probs_ip
+            call set_par(fcl_i=i, par_i=0, p=k)
           endif
         enddo
       enddo
     close(42)
-    
-    if (allocated(LL_pair)) deallocate(LL_pair)
 
+    if (allocated(LL_pair)) deallocate(LL_pair)
+    
   end subroutine clean_pedigree
 
 end module check_pedigree
-
 
 !===============================================================================
 !===============================================================================
 
 module Generations
   use global_variables, ONLY: nIndT, nMatings, quiet
-  use pedigree_fun, ONLY: pedigree, Matings
+  use pedigree_fun, ONLY: pop, pedigree
   implicit none
   private
 
@@ -527,11 +667,11 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   subroutine mk_parent_matrix()
     use pedigree_fun, ONLY: get_par
-    integer :: i,p
+    integer :: i
   
-    allocate(Parent(2,nIndT))
-    forall (i=1:nIndT, p=1:2)  Parent(p,i) = get_par(i,p)
-  
+    allocate(Parent(2,1:nIndT))
+    forall (i=1:nIndT)  Parent(:,i) = get_par(i)
+
   end subroutine mk_parent_matrix
   
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -545,12 +685,12 @@ contains
     Gen_down(0) = 0
     
     do i=1,nIndT
-      if (ALL(Parent(:,i)==0))  Gen_down(i) = 0  ! founder
+      if (all(parent(:,i)==0))  Gen_down(i) = 0  ! founder  
     enddo
 
     do g = 0,max_gen
       do i=1, nIndT
-        if (Gen_down(i) < max_gen)  cycle
+        if (Gen_down(i) < max_gen)  cycle        
         if (ALL(Gen_down(Parent(:,i)) <= g)) then   ! including Parent(i,m)==0
           Gen_down(i) = g+1
         endif    
@@ -565,27 +705,29 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ! no offspring --> lp_post not used --> generation number irrelevant
   subroutine calc_gens_up()
-    integer :: i,g, max_gen_off, m, no, k, mk 
+!    use pedigree_fun, ONLY: pop, pedigree 
+    integer :: i,g, max_gen_off, m, k
     integer, allocatable, dimension(:) :: Gen_up_i
+    integer, pointer :: offspring(:), mates(:)
 
     allocate(Gen_up_i(0:nIndT))  ! use temporary per-individual array to make things easier
     Gen_up_i(0) = 0
     Gen_up_i = max_gen
 
     do i=1,nIndT
-      if (.not. any(Parent==i))  Gen_up_i(i) = 0  ! individual without offspring
+      if (.not. any(parent==i))  Gen_up_i(i) = 0  ! individual without offspring
     enddo
     
-    ! for each mating, check if all offspring have a generation number yet. 
+    ! for each individual, check if all offspring have a generation number yet. 
     ! If so, Gen_up(i) = offspring max +1
     do g=0,max_gen
-      do i=1,nIndT
+      do i=1, nIndT
         if (Gen_up_i(i) < max_gen)  cycle   ! already done/no offspring
         max_gen_off = -1
-        do k=1, Pedigree(i)%nMates
-          mk = Pedigree(i)%matings_m(k)
-          no = Matings(mk)%nOffspring
-          max_gen_off = MAX(max_gen_off, MAXVAL(Gen_up_i( Matings(mk)%offspring_q(1:no) )) ) 
+        mates => pop(i)%offspring_m 
+        do k=1,SIZE(mates)         
+          offspring => pedigree(mates(k))%offspring 
+          max_gen_off = MAX(max_gen_off, MAXVAL(Gen_up_i( offspring )) )
           if (max_gen_off == max_gen)  exit  ! one or more offspring with not-yet-known Gen (> g)
         enddo
         if (max_gen_off <= g) then
@@ -599,14 +741,15 @@ contains
     allocate(Gen_up(1:nMatings))    
     Gen_up = max_gen
     do m=1, nMatings
-      no = Matings(m)%nOffspring
-      Gen_up(m) = MAXVAL(Gen_up_i( Matings(m)%offspring_q(1:no) ))       
+      offspring => pedigree(m)%offspring 
+      Gen_up(m) = MAXVAL(Gen_up_i( offspring ))       
     enddo
     
     deallocate(Gen_up_i)
   end subroutine calc_gens_up
 
 end module Generations
+
 
 !===============================================================================
 !===============================================================================
@@ -631,9 +774,9 @@ module impute_fun
   ! for prob_ant_post
   integer(kind=ishort), allocatable :: Gl(:)   ! genotypes at SNP l
   double precision, allocatable :: lp_ant(:,:), lp_post(:,:,:)  ! log-probabilities
-  double precision :: lOcA(0:2, -1:2), lAKA2P(0:2,0:2,0:2)
+  double precision :: lOcA(0:2, -1:2), lAKA2P(0:2,0:2,0:2), lAHWE(0:2)
   
-  public :: clean_n_impute, apply_edits
+public :: clean_n_impute, apply_edits
 
 contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -644,31 +787,44 @@ contains
 
     character(len=*), intent(IN) :: EditsFile
  !   logical, intent(IN) :: do_pedigree
-    double precision, parameter :: doubt_threshold = 0.49  ! if two genotypes have prob > doubt_threshold, impute as --when-in-doubt
+    double precision, parameter :: doubt_threshold = 0.49 !log(1d0/3) !0.49  ! if two genotypes have prob > doubt_threshold, impute as --when-in-doubt
     integer :: l,x, unit_log
     character(len=20) :: nIndT_char
     character(len=500), allocatable :: fmt_gprob_header, fmt_gprob_data
-    
+!    integer :: i, max_mates_per_indiv, n_mates_i
+       
     ! allocate once & re-use for each SNP
     allocate(Gprob(0:2,1:nIndT)) 
     allocate(Gprob_prev(0:2,1:nIndT))    
     allocate(Gl(0:nIndT))
     allocate(lp_ant(0:2, 0:nIndT))
     allocate(lp_post(0:2,2, 0:nMatings))
+
+    ! max_mates_per_indiv = 0
+    ! do i=1,nIndT
+      ! n_mates_i = SIZE(pop(i)%offspring_m)
+      ! if (n_mates_i >  max_mates_per_indiv)   max_mates_per_indiv = n_mates_i
+    ! enddo   
+    ! allocate(post_per_mate(0:2, max_mates_per_indiv))
+    ! allocate(im_indx(0:2, max_mates_per_indiv))
+    ! forall (x=0:2)  im_indx(x,:) = (/ (i, i=1,max_mates_per_indiv) /)
+
     
     if (do_probs_out) then
       write(nIndT_char, *) nIndT
       fmt_gprob_header = '(a10, a3, 2x, '//trim(nIndT_char)//'a20)'
       fmt_gprob_data   = '(a10, i3, 2x, '//trim(nIndT_char)//'f8.5)'
       open(unit=3, file='geno_probs.txt')
-      write(3, fmt_gprob_header)  'SNP', 'G', Pedigree(1:nIndT)%ID  
+      write(3, fmt_gprob_header)  'SNP', 'G', pop(1:nIndT)%ID  
+      deallocate(fmt_gprob_header)
     endif
     
     if (do_snpclean .or. do_impute) then
       unit_log = 4
       open(unit=unit_log, file=trim(EditsFile))
-      write(unit_log, '(5(a9,2x), 29x,2(a5,2x),3a9)') 'snp_index', 'snp_name',  &
-        'threshold', 'id_index', 'id_name', 'g_in', 'g_out', 'prob_0', 'prob_1', 'prob_2'
+      write(unit_log, '(5(a9,2x), 29x,2(a5,2x),3(3a9,2x))') 'snp_index', 'snp_name',  &
+        'threshold', 'id_index', 'id_name', 'g_in', 'g_out', 'prob_0', 'prob_1', 'prob_2', &
+        'p_ant_0', 'p_ant_1', 'p_ant_2', 'p_post_0', 'p_post_1', 'p_post_2'
     endif
     
     if (do_impute_all) then
@@ -677,10 +833,11 @@ contains
       N = nIndG
     endif
     
-    if (.not. quiet)  print *, 'getting generation numbers ... '
+    if (.not. quiet)  call printt('getting generation numbers ... ')
     call calc_Gens()
     
-    if (.not. quiet) print *, 'cleaning and/or imputing genotype data... '
+    if (.not. quiet) call printt('cleaning and/or imputing genotype data... ')
+    
     do l=1, nSnp 
       if (.not. quiet .and. mod(l,50)==0) call printt(text='l=', int=l)  ! write(*,'(i5, 2x)', advance='no') l
       ! only first iteration, if looping over several thresholds:
@@ -695,7 +852,7 @@ contains
       else
         call peeler(tol)
       endif
-      
+
       if (do_probs_out) then
         do x=0,2
           write(3, fmt_gprob_data) SNP_names(l), x, exp(Gprob(x,:))
@@ -706,7 +863,7 @@ contains
       if (do_snpclean) then
         call clean_snp(l, Threshold_snpclean)
         call peeler(tol)
-      endif 
+      endif     
       
       ! impute
       if (do_impute)  call impute_snp(l, Threshold_impute)
@@ -714,13 +871,15 @@ contains
     enddo
     if (do_probs_out)  close(3)
     if (do_snpclean .or. do_impute)  close(unit_log) 
-    if (.not. quiet)  print *, ''   ! line break
     
     deallocate(Gprob_prev) 
     deallocate(Gprob)
     if (allocated(Gl)) deallocate(Gl)
     if (allocated(lp_ant)) deallocate(lp_ant)
     if (allocated(lp_post)) deallocate(lp_post)
+    if(allocated(fmt_gprob_data)) deallocate(fmt_gprob_data)
+    deallocate(Gen_rank_down)
+    deallocate(Gen_rank_up)
   
   contains
     !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -728,13 +887,21 @@ contains
     !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     subroutine init_gprobs(l)
       integer, intent(IN) :: l  ! SNP number
-      integer :: i,m
+      integer :: i,m,x, par(2)
+      double precision :: lOHWE(0:2,-1:2)
       
-      forall (i=0:nIndT)      lp_ant(:,i)    = log(AHWE(:,l))  
-      forall (m=0:nMatings)   lp_post(:,:,m) = 0D0  
       lOcA = log(OcA)
-      lAKA2P = log(AKA2P) 
-    
+      lAKA2P = log(AKA2P)
+      lAHWE = log(AHWE(:,l))
+      
+      forall (x=0:2)  lOHWE(x,:) = lAHWE(x) + lOcA(x,:)
+      forall (x=-1:2) lOHWE(:,x) = logScale(lOHWE(:,x))      
+      forall (i=0:nIndT) lp_ant(:,i)   = lOHWE(:,Gl(i))     
+      do m=0, nMatings
+        par = pedigree(m)%parent
+        forall (i=1:2)  lp_post(:,i,m) = lOHWE(:,Gl(par(i)))
+      enddo  
+      
     end subroutine init_gprobs
     
     !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -743,22 +910,74 @@ contains
     subroutine clean_snp(l, Threshold)
       integer, intent(IN) :: l
       real, intent(IN) :: Threshold
-      integer :: i
+      integer :: i!,x
       integer(kind=ishort) :: g_new
-      
+      double precision :: p_not_err, i_ap(2,0:2), lp_err!, lp_not_err, ref_unif
+        
+      p_not_err = (OcA(0,0) + OcA(1,1) + OcA(2,2))/3d0
+      lp_err = log(1-p_not_err)
+ !     lp_not_err = log(p_not_err)
+   !     forall (x=0:2)  ref_lp(x) = log(1-OcA(x,x))
+ !     ref_unif = log(1d0/3)   ! too arbitrary?   ! = new doubt_threshold
+ !     write(*, '("ref_lp:  ", 3f12.5)')  lp_err, lp_not_err, ref_unif
+      ! print *, ''
+
       do i=1,nIndG
+        ! TODO: loop over matings instead?
         if (Gl(i) == -1)  cycle
-        if (Gprob(Gl(i),i) > log(Threshold))  cycle
- !       Gprob_excl = calc_g_prob(i, excl_self=.TRUE.)  
-        ! DO NOT EXLUDE SELF: else doesn't resolve whether parent or offspring
-        ! is more likely to have error when they conflict. 
-        g_new = -1
-        write(unit_log, '(i9,2x,a9,2x,f9.5,2x,i9,2x,a40,2(i5,2x),3f9.5)') l, SNP_names(l), Threshold, &
-         i, Pedigree(i)%ID, Gl(i), g_new, exp(Gprob(:,i))
-        Gl(i) = g_new
+        i_ap(1,:) = lp_ant(:,i)
+        i_ap(2,:) = logScale(mates_post(i))
+        
+        ! if (i==79) then
+          ! write(*,'(i5, 2x, a12, 2x, i5, ";", i5, ";", 10i5)') i, pop(i)%ID, gl(i), &
+            ! indiv2mating(i), pop(i)%offspring_m
+          ! write(*, '("ant:  ", 3f10.4)') lp_ant(:,i)
+          ! write(*, '("post: ", 3f10.4)') i_ap(2,:)
+          ! write(*, '("gpr:  ", 3f10.4)') Gprob(:,i)
+          ! print *, ''
+          ! write(*, '("ant:  ", 3f9.5)') exp(lp_ant(:,i))
+          ! write(*, '("post: ", 3f9.5)') exp(i_ap(2,:))
+          ! write(*, '("gpr:  ", 3f9.5)') exp(Gprob(:,i))
+          ! print *, ''
+        ! endif        
+        
+        if (Gprob(Gl(i),i) < lp_err) then  !log(Threshold))  then
+   !       Gprob_excl = calc_g_prob(i, excl_self=.TRUE.)  
+          ! DO NOT EXLUDE SELF: else doesn't resolve whether parent or offspring
+          ! is more likely to have error when they conflict. 
+    !      if (any(Gprob(:,i) >= lp_not_err)) then
+    !        g_new = MAXLOC(Gprob(:,i), DIM=1, KIND=ishort) -1_ishort
+    !      else
+            g_new = -1
+     !     endif
+          write(unit_log, '(i9,2x,a9,2x,f9.5,2x,i9,2x,a40,2(i5,2x),3(3f9.5,2x))') l, SNP_names(l), &
+           Threshold, i, pop(i)%ID, Gl(i), g_new, exp(Gprob(:,i)), exp(lp_ant(:,i)), exp(i_ap(2,:))
+          Gl(i) = g_new
+  !      else if (any(i_ap(:,Gl(i)) < lp_err) .and. all(i_ap(:,Gl(i)) < ref_unif)) then
+  !        g_new = -1  !Gl(i)
+  !        write(unit_log, '(i9,2x,a9,2x,f9.5,2x,i9,2x,a40,2(i5,2x),3(3f9.5,2x))') l, SNP_names(l), &
+  !         Threshold, i, pop(i)%ID, Gl(i), g_new, exp(Gprob(:,i)), exp(lp_ant(:,i)), exp(i_ap(2,:))  
+  !        Gl(i) = g_new           
+        endif       
       enddo
     
     end subroutine clean_snp
+  
+    !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ! get posterior prob for individual i
+    !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    pure function get_post(i)
+      double precision :: get_post(3)
+      integer, intent(IN) :: i
+      integer :: isex
+      
+      isex = pop(i)%sex
+      if (isex==3) then
+        get_post = lp_post(:,1,0)
+      else
+        get_post = lp_post(:,isex,indiv2mating(i))
+      endif
+    end function get_post 
   
     !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ! impute missing genotypes with Gprob > Threshold
@@ -777,7 +996,7 @@ contains
       do i=1,N
         if (Gl(i) /= -1)  cycle
         if (ALL(Gprob(:,i) < log(Threshold)))  cycle
-        if (COUNT(Gprob(:,i) >= log(doubt_threshold)) > 1) then   ! implies threshold <= doubt_threshold 
+        if (COUNT(Gprob(:,i) >= doubt_threshold) > 1) then    
           select case (imp_default)
             case ('het')  
               g_new = 1
@@ -793,8 +1012,8 @@ contains
         else
           g_new = MAXLOC(Gprob(:,i), DIM=1, KIND=ishort) -1_ishort
         endif
-        write(unit_log, '(i9,2x,a9,2x,f9.5,2x,i9,2x,a40,2(i5,2x),3f9.5)') l, SNP_names(l), Threshold, &
-         i, Pedigree(i)%ID, Gl(i), g_new, exp(Gprob(:,i))
+         write(unit_log, '(i9,2x,a9,2x,f9.5,2x,i9,2x,a40,2(i5,2x),3(3f9.5,2x))') l, SNP_names(l), &
+         Threshold, i, pop(i)%ID, Gl(i), g_new, exp(Gprob(:,i)), exp(lp_ant(:,i)), exp(get_post(i))
         Gl(i) = g_new
       enddo 
     
@@ -822,34 +1041,49 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   subroutine peeler(tol)
     double precision, intent(IN) :: tol  ! tolerance level to declare convergence
-    integer, parameter ::  r_max = 50  ! max number of iterations (fail safe)
+    integer, parameter ::  r_max = 20  ! max number of iterations (fail safe)
     integer :: r,x,i,m
        
     do r=1,r_max
       Gprob_prev = Gprob
       
+!       call timestamp2()
+!      print *, 'go'                
       ! peel down
       do x=1,nIndT
         i = Gen_rank_down(x)
         lp_ant(:,i) = calc_p_ant(i)
       enddo  
       
+!      call timestamp2()
+ !    print *, r, 'lp_ant :', SUM(lp_ant)                 
       ! peel up
       do x=1,nMatings
         m = Gen_rank_up(x)
         lp_post(:,:,m) = calc_p_post(m)
       enddo 
       
+!       call timestamp2()
+  !    print *, r, 'lp_post :', SUM(lp_post)                                    
       ! calc genotype probabilities
       do i=1,nIndT
         Gprob(:,i) = calc_g_prob(i)
       enddo
  
       ! check for convergence
-!      write(*,'(2i4, "  total abs diff: ", f15.5)') l, r, SUM(abs(Gprob - Gprob_prev))
+  !    write(*,'(i4, "  total abs diff: ", f15.5)') r, SUM(abs(Gprob - Gprob_prev))
+ !     print *, ''
       if (all(abs(Gprob - Gprob_prev) < tol))  exit
     enddo
     
+   ! contains
+    ! subroutine timestamp2()
+      ! character(len=10) :: time
+    
+      ! call date_and_time(TIME=time)
+      ! write(*, '(a10,1x)', advance='no')  time
+       
+    ! end subroutine timestamp2
   end subroutine peeler
   
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -873,13 +1107,18 @@ contains
     function quick_p_ant(i)
       double precision :: quick_p_ant(0:2)
       integer, intent(IN) :: i
-      integer :: p, par_q(2),x,y,u
+      integer :: p, par_q(2),x,y,u, m
       double precision :: part_par(0:2,2), tmpA(0:2,0:2), tmpB(0:2,0:2)
       
-      forall (p=1:2)  par_q(p) = get_par(i,p) 
+      m = indiv2mating(i)
+      ! if (m==0) then
+        ! calc_p_ant = lAOHWE(:,Gl(i))  ! internal compiler error
+        ! return
+      ! endif
+      par_q = pedigree(m)%parent
       forall (p=1:2)  part_par(:,p) = lp_ant(:,par_q(p)) + lOcA(:,Gl(par_q(p)))
       ! combine the parts. y=sire genotype, x=dam genotype
-      do y=0,2  ! sire genotype
+      do y=0,2 
         forall (x=0:2)  tmpA(:,x) = part_par(x,1) + part_par(y,2) + lAKA2P(:,x,y)
         forall (u=0:2)  tmpB(y,u) = logSumExp(tmpA(u,:))
       enddo
@@ -907,6 +1146,7 @@ contains
     character(len=40) :: dumC(2)
     real :: dumR
     
+    call CheckFile(trim(editFile))    
     N_edits = FileNumRow(trim(editFile)) -1  ! 1st row = header
     
     open (5, file=trim(editFile), action='read')
@@ -924,7 +1164,7 @@ contains
     close(5)  
 
     ! write to file  (excl indiv 0)
-    call writeGeno(Geno=transpose(geno(1:,:)), nInd=SIZE(geno,DIM=1)-1, nSnp=SIZE(geno,DIM=2),&
+    call write_geno(Geno=transpose(geno(1:,:)), nInd=SIZE(geno,DIM=1)-1, nSnp=SIZE(geno,DIM=2),&
       ID=IdV, FileName=GenoOutFile, FileFormat=GenoOutFormat)
   
   end subroutine apply_edits
@@ -945,7 +1185,7 @@ contains
     double precision :: calc_g_prob(0:2)
     integer, intent(IN) :: i
        
-    calc_g_prob = lp_ant(:,i) + lOcA(:,Gl(i)) + mates_post(i)
+    calc_g_prob = lp_ant(:,i) + lOcA(:,Gl(i)) + logScale(mates_post(i))
     calc_g_prob = logScale(calc_g_prob)  ! scale to sum to 1
     
 !    call chk_logprob_OK(calc_g_prob, lbl='calc_g_prob', lbl_i = i)
@@ -959,19 +1199,24 @@ contains
     double precision :: calc_p_ant(0:2)
     integer, intent(IN) :: i
     double precision :: part_par(0:2,2), part_sibs(0:2,0:2), tmpA(0:2,0:2), tmpB(0:2,0:2)
-    integer :: p, x,y, par_q(2), u
+    integer :: p, x,y, par_q(2), u, m
 
-    forall (p=1:2)  par_q(p) = get_par(i,p) 
+    m = indiv2mating(i)
+    if (m==0) then
+      calc_p_ant = lAHWE
+      return
+    endif
+    par_q = pedigree(m)%parent  
     do p=1,2
       part_par(:,p) = lp_ant(:,par_q(p)) + lOcA(:,Gl(par_q(p))) + &
         mates_post(par_q(p), q_not=par_q(3-p))
     enddo
 
-    ! full siblings 
-    part_sibs = inh_offspr(pedigree(i)%parentpair, q_not=i)   ! TODO: pointer? chk speed & mem use
+    ! full siblings   
+    part_sibs = inh_offspr(m, q_not=i)
 
     ! combine the parts. y=sire genotype, x=dam genotype
-    do y=0,2  ! sire genotype
+    do y=0,2  
       forall (x=0:2)  tmpA(:,x) = part_par(x,1) + part_par(y,2) + lAKA2P(:,x,y) + part_sibs(x,y)
       forall (u=0:2)  tmpB(y,u) = logSumExp(tmpA(u,:))
     enddo
@@ -990,33 +1235,27 @@ contains
   function calc_p_post(m)
     double precision :: calc_p_post(0:2, 2)  ! genotypes; dam-sire  
     integer, intent(IN) :: m
-    type(matepair), pointer :: mp
     double precision :: part_par(0:2,2), part_off(0:2,0:2)
-    integer :: p, par_q(2), x,y
+    integer :: p, x,y, par_q(2)
     
-    mp => Matings(m)
-    if (associated(mp)) then
-      par_q = mp%parent_q
-    else
-      par_q = 0
-    endif
+    par_q = pedigree(m)%parent  ! pointer?
     do p=1,2  
       part_par(:,p) = lp_ant(:,par_q(p)) + lOcA(:,Gl(par_q(p))) + &
         mates_post(par_q(p), q_not=par_q(3-p))
     enddo
     
     ! offspring
-    part_off = inh_offspr(mp)
+    part_off = inh_offspr(m)
             
-    ! combine parts
-    ! NOTE: dam prob sums over possible sire genotypes and vv
+    ! combine parts; x=dam genotype, y=sire genotype   
+    ! NOTE: dam prob sums over possible sire genotypes and vv  (marginal probs)
     forall (x=0:2)  calc_p_post(x,1) = logSumExp(part_par(:,2) + part_off(x,:))
     forall (y=0:2)  calc_p_post(y,2) = logSumExp(part_par(:,1) + part_off(:,y))
         
     ! scale to sum to 1
     forall (p=1:2)  calc_p_post(:,p) = logScale(calc_p_post(:,p))
     
- !   call chk_logprob_OK(RESHAPE(calc_p_post, (/3*2/)), lbl='calc_p_post', lbl_i = m)
+!    call chk_logprob_OK(RESHAPE(calc_p_post, (/3*2/)), lbl='calc_p_post', lbl_i = m)
     
   end function calc_p_post
   
@@ -1027,20 +1266,33 @@ contains
     double precision :: mates_post(0:2)
     integer, intent(IN) :: i  ! focal individual
     integer, intent(IN), optional :: q_not  ! mate to exclude from calculation
-    integer :: k,km
+    integer :: k, nmates, psex
     double precision, allocatable :: post_per_mate(:,:)
-    type(individual), pointer :: ip
+    integer, pointer :: mates(:)
     
-    ip => pedigree(i)
+    mates => pop(i)%offspring_m 
+    nmates = SIZE(mates)
+    psex = pop(i)%sex  
     
-    allocate(post_per_mate(0:2, ip%nMates))
-    post_per_mate = 0D0
-    do k=1,ip%nMates    ! if nMates=0, nothing is done.
-      km = ip%matings_m(k)    ! index in matings array (type matepair)
-      if (present(q_not)) then
-        if (any(Matings(km)%parent_q == q_not))  cycle
+    if (nmates < 2) then
+      if (nmates==1 .and. present(q_not)) then
+        if (pedigree(mates(1))%parent(3-psex) == q_not)  nmates = 0
       endif
-      post_per_mate(:,k) = lp_post(:, ip%sex, km)
+      if (nmates==0) then
+        mates_post = 0D0
+      else if (nmates==1) then
+        mates_post = lp_post(:, psex, mates(1))
+      endif
+      return
+    endif
+  
+    allocate(post_per_mate(0:2, nmates))     
+    post_per_mate = 0D0                          
+    do k=1,nmates
+      if (present(q_not)) then 
+        if (pedigree(mates(k))%parent(3-psex) == q_not)  cycle
+      endif
+      post_per_mate(:,k) = lp_post(:, psex, mates(k))
     enddo    
     mates_post = SUM(post_per_mate, DIM=2)
 
@@ -1049,58 +1301,58 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ! calc prod_o(inh_o * mates_post)
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  function inh_offspr(mp, q_not)
+  function inh_offspr(m, q_not)
     double precision :: inh_offspr(0:2,0:2)
-    type(matepair), pointer, intent(IN) :: mp
-!    integer, intent(IN) :: m
+    integer, intent(IN) :: m
     integer, intent(IN), optional :: q_not  ! offspring to exclude from calculation
-    integer :: o,oq,x,y
+    integer :: o,x,y, noff
     double precision, allocatable :: per_off(:,:,:)   ! TODO? allocate once & reuse
     double precision :: off_tmp(0:2)
-!    type(matepair), pointer :: mp
+    integer, pointer :: offspring(:)
     
-!    mp => Matings(m)
-    
-    if (.not. associated(mp)) then  ! no mating (both parents unknown)
-!    if (m==0) then
-      inh_offspr = 0D0
-      return
+    offspring => pedigree(m)%offspring
+    noff = SIZE(offspring)
+    if (noff == 1 .and. present(q_not)) then
+      if (offspring(1) == q_not)  noff = 0
     endif
-    
-    allocate(per_off(0:2, 0:2, mp%nOffspring))
+    if (noff == 0) then
+      inh_offspr = 0D0
+     return
+   endif
+   
+    allocate(per_off(0:2, 0:2, noff))
     per_off = 0D0
-    do o=1,mp%nOffspring
-      oq = mp%Offspring_q(o)
+    do o=1,noff
       if (present(q_not)) then
-        if (oq == q_not)  cycle
+        if (offspring(o) == q_not)  cycle
       endif
-      off_tmp = lOcA(:,Gl(oq)) + mates_post(oq)
+      off_tmp = lOcA(:,Gl(offspring(o))) + mates_post(offspring(o))
       ! sum over possible offspring genotypes; y=sire genotype, x=dam genotype
       forall (y=0:2, x=0:2)  per_off(x,y,o) = logSumExp(off_tmp + lAKA2P(:,x,y))
     enddo
     
     ! multiply across offspring
-    inh_offspr = SUM(per_off, DIM=3)
+    inh_offspr = SUM(per_off, DIM=3)   
   end function inh_offspr
   
   
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  ! check if probabilities are valid (debugging tool)
-  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine chk_logprob_OK(logprob, lbl, lbl_i)
-    double precision, intent(IN), dimension(:) :: logprob
-    character(len=*), intent(IN) :: lbl
-    integer, intent(IN) :: lbl_i
+  ! !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! ! check if probabilities are valid (debugging tool)
+  ! !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! subroutine chk_logprob_OK(logprob, lbl, lbl_i)
+    ! double precision, intent(IN), dimension(:) :: logprob
+    ! character(len=*), intent(IN) :: lbl
+    ! integer, intent(IN) :: lbl_i
     
-    if (any(logprob /= logprob) .or. any(logprob > sqrt(EPSILON(0d0))) .or. all(logprob < -HUGE(0d0))) then
-      print *, ''
-      print *, trim(lbl), ' not a valid probability! ', lbl_i
-      write(*,'(10f9.4)') logprob
-      print *, ''
-      stop
-    endif
+    ! if (any(logprob /= logprob) .or. any(logprob > sqrt(EPSILON(0d0))) .or. all(logprob < -HUGE(0d0))) then
+      ! print *, ''
+      ! print *, trim(lbl), ' not a valid probability! ', lbl_i
+      ! write(*,'(10f9.4)') logprob
+      ! print *, ''
+      ! stop
+    ! endif
   
-  end subroutine chk_logprob_OK
+  ! end subroutine chk_logprob_OK
   
 end module impute_fun
 
@@ -1109,10 +1361,10 @@ end module impute_fun
 !===============================================================================
 
 program main
-  use sqa_fileIO, ONLY: ReadGeno
-  use sqa_general, ONLY: PreCalcProbs
+  use sqa_fileIO, ONLY: read_geno
+  use sqa_general, ONLY: PreCalcProbs, printt
   use global_variables
-  use pedigree_fun, ONLY: init_pedigree, read_pedigree, init_matings
+  use pedigree_fun, ONLY: init_pop, read_pedigree, init_pedigree
   use check_pedigree
   use impute_fun
   implicit none
@@ -1122,54 +1374,71 @@ program main
   character(len=3) :: GenoInFormat, GenoOutFormat
   real :: Threshold_pedclean
   logical :: do_pedclean, do_pedigree
+  double precision :: Er, ErV(3)
+!  integer :: i,m
+!  integer, allocatable :: mates(:)
     
   call read_args()   ! set defaults & read command line arguments
   
-  if (.not. quiet)  print *, 'reading genotypes ...'
-  call ReadGeno(Geno=Geno, ID=IdV, SNP_names=SNP_names, FileName=GenoFile, &
+  if (.not. quiet)  call printt('reading genotypes ...')
+  call read_geno(Geno=Geno, ID=IdV, SNP_names=SNP_names, FileName=GenoFile, &
     FileFormat = GenoInFormat, transp=.FALSE.)
   nIndG = SIZE(Geno, DIM=1) -1 ! dim 0:nIndG
   nSnp  = SIZE(Geno, DIM=2)
   
   if (do_pedclean .or. do_snpclean .or. do_impute) then
-    if (.not. quiet)  print *, 'initializing pedigree ...'
-    call init_pedigree(IdV)
+    if (.not. quiet)  call printt('initializing population ...')
+    call init_pop(IdV)
   endif
  
   if (.not. quiet)  call print_sumstats('IN') 
  
-  if (do_pedigree .and. .not. quiet)  print *, 'reading pedigree file ... '
-  if (do_pedigree) call read_pedigree(PedigreeFile)
+  if (do_pedigree) then
+    if (.not. quiet)  call printt('reading pedigree file ...')
+    call read_pedigree(PedigreeFile)
+    if (.not. quiet) print *, 'Total # individuals: ', nIndT
+  endif
+  call init_pedigree()  
+  ! if (do_pedigree) then
+    ! if (.not. quiet) call printt('pruning pedigree ...')
+    
+    ! call prune_pedigree()
+    ! if (.not. quiet) print *, 'Total # individuals post-prune: ', nIndT
+  ! endif
   
   if (do_pedclean .or. do_snpclean .or. do_impute) then  ! not if do_read_edits
     allocate(AF(nSnp))
     AF = getAF(AFFile) 
-    call PreCalcProbs(nSnp, Er, AF)
+    
+    if (erV(1) > TINY(0D0)) then
+      call PreCalcProbs(nSnp, AF, ErV=ErV)
+    else
+      call PreCalcProbs(nSnp, AF, Er=Er)  
+    endif
+    
   endif
   
   if (do_pedclean) then
-    if (.not. quiet)  print *, 'cleaning pedigree ... '   
-    call clean_pedigree('pedclean.edits', Threshold_pedclean)
+    if (.not. quiet)  call printt('cleaning pedigree ... ')   
+    call clean_pedigree('pedclean_edits.txt', Threshold_pedclean)
   else
-    if (.not. quiet)  print *, 'skipping pedigree cleaning ...'
+    if (.not. quiet)  call printt('skipping pedigree cleaning ...')
   endif
   
-  if (do_pedclean .or. do_snpclean .or. do_impute) then
-    call init_matings() 
+  if (do_pedclean .or. do_snpclean .or. do_impute) then 
     call clean_n_impute(EditsFile)  ! , do_pedigree
   endif
 
   if (do_geno_out) then
-    if (.not. quiet)  print *, 'writing new genotypes to file ...'
+    if (.not. quiet)  call printt('writing new genotypes to file ...')
     call apply_edits(EditsFile, GenoOutFile, GenoOutFormat)
   endif
   
-  if (.not. quiet)  print *, 'done.'
+  if (.not. quiet)  call printt('done.')
   
   if (.not. quiet .and. do_geno_out)  call print_sumstats('OUT') 
   
   call deallocall()
-  deallocate(IdV)
 
 
 contains
@@ -1178,7 +1447,7 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   subroutine read_args()
     use sqa_fileIO, only: valid_formats
-    integer :: nArg, i, x
+    integer :: nArg, i, x, z
     character(len=32) :: arg, argOption
     logical :: only_read_edits    
     
@@ -1188,12 +1457,13 @@ contains
     do_pedigree = .TRUE.
     PedigreeFile = 'Pedigree.txt'  ! 'ped_griffin.txt'
     AFFile = 'NoFile'
-    GenoOutFile = 'Geno_imputed'
+    GenoOutFile = 'geno_imputed'
     GenoOutFormat = 'SEQ'
-    EditsFile = 'imputation.edits'
+    EditsFile = 'imputation_edits.txt'
     Er = 0.001
+    ErV = (/ 0.0d0, 0.0d0, 0.0d0 /)  ! hom|other hom, het|hom, and hom|het
     do_pedclean = .TRUE.
-    Threshold_pedclean = 0.05
+    Threshold_pedclean = 0.01
     do_snpclean = .TRUE.
     Threshold_snpclean = 0.01
     do_impute = .TRUE.
@@ -1245,8 +1515,16 @@ contains
           case ('--err')
             i = i+1
             call get_command_argument(i, argOption)
-            read(argOption, *)  Er   ! TODO: length 3
-            if (Er <= 0.0 .or. Er > 0.5)  stop 'please provide a genotyping error rate --err >0 and <0.5'            
+            read(argOption, *)  Er   
+            if (Er <= 0.0 .or. Er > 0.5)  stop 'please provide a genotyping error rate --err >0 and <=0.5'        
+
+          case ('--errV')
+            do z=1,3
+              i = i+1
+              call get_command_argument(i, argOption)
+              read(argOption, *)  ErV(z)
+              if (ErV(z) <= 0.0 .or. ErV(z) > 0.5)  stop 'Genotyping error rates must be >0 and <=0.5'
+            enddo           
             
           case ('--af', '--maf', '--freq')
             i = i+1
@@ -1380,6 +1658,8 @@ contains
     print '(a)',    '  --no-pedigree        impute without pedigree, use `--when-in-doubt` everywhere'  
     print '(a)',    '  --err <value>        presumed genotyping error rate',&
                     '                        (Will be estimated from data in future version)'  
+     print '(a)',    '  --errV <3 values>   alternative to --err: P(observed|actual) for',&
+                    '                        hom|other hom, het|hom, and hom|het'                
     print '(a)',    '  --af <filename>      optional input file with allele frequencies; only relevant',&
                     '                        in combination with --min_prob. Either 1 column and no header,',&
                     '                        or multiple columns with a column MAF, AF, or Frequency',&
@@ -1403,11 +1683,11 @@ contains
                     '                        default: 0.0001'                    
     print '(a)',    '  --out <filename>     output file name, extension will be added. Default: Geno_imputed'
     print '(a)',    '  --outformat <x>      same options as for --informat. Default: SEQ'     
-    print '(a)',    '  --no-geno-out        no genotype output file with edits (only imputation.edits file), which will be',& 
-                    '                         possible to read in to apply the edits'
+    print '(a)',    '  --no-geno-out        no genotype output file with edits (only imputation_edits.txt), which',& 
+                    '                          can be read in to apply the edits'
     print '(a)',    '  --probs-out          write all genotype probabilities to a text file, with 3 rows',&
                     '                         per SNP and 1 column per ID'
-    print '(a)',    '  --edits-out <filename>  file name for list with edits. Default: imputation.edits'
+    print '(a)',    '  --edits-out <filename>  file name for list with edits. Default: imputation_edits.txt'
     print '(a)',    '  --edits-in <filename>   edits file as input'
     print '(a)',    '  --quiet              suppress all messages'
   end subroutine print_help
@@ -1516,16 +1796,21 @@ subroutine deallocall
 
   ! global_varirables
   if (allocated(Geno))  deallocate(Geno)
+  if (allocated(indiv2mating))  deallocate(indiv2mating)
+  if (allocated(IdV))  deallocate(IdV) 
   if (allocated(SNP_names))  deallocate(SNP_names) 
   if (allocated(AF)) deallocate(AF)  
+   if (allocated(pedigree))  deallocate(pedigree)
   ! pedigree_fun
+  if (allocated(pop))  deallocate(pop)
   if (allocated(pedigree))  deallocate(pedigree)
-  if (allocated(matings))  deallocate(matings)
   ! sqa_general
   if (allocated(AHWE)) deallocate(AHWE)
   if (allocated(OHWE)) deallocate(OHWE)
   if (allocated(AKAP)) deallocate(AKAP)
   if (allocated(OKAP)) deallocate(OKAP)
+  
+ 
 
 end subroutine deallocall
   

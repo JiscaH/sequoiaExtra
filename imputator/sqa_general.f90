@@ -10,10 +10,13 @@ module sqa_general
   
   integer, parameter :: ishort = selected_int_kind(1), ilong=selected_int_kind(8) 
   integer, parameter :: nchar_ID=40
-  integer, parameter :: chunk_size_large = 100, chunk_size_small=10
   ! inheritance rules/probabilities; O=observed, A=actual
   double precision :: OcA(0:2,-1:2), OKA2P(-1:2,0:2,0:2), AKA2P(0:2,0:2,0:2)  
   double precision, allocatable :: AHWE(:,:), OHWE(:,:), AKAP(:,:,:), OKAP(:,:,:) 
+  
+  interface mk_OcA
+    module procedure mk_OcA_s, mk_OcA_v 
+  end interface
   
 contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -62,10 +65,21 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ! initialise arrays with Mendelian inheritance rules and probabilities
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  subroutine PreCalcProbs(nSnp, Er, AF)
+  subroutine PreCalcProbs(nSnp, AF, Er, ErV)
     integer, intent(IN) :: nSnp
-    double precision, intent(IN) :: Er, AF(nSnp)
+    double precision, intent(IN) :: AF(nSnp)
+    double precision, intent(IN), optional :: Er
+    double precision, intent(IN), optional :: ErV(3)   ! either one must be specified
     integer :: l,i,j
+
+    ! Probability observed genotype (dim2) conditional on actual genotype (dim1)
+    if (present(ErV)) then
+      OcA = mk_OcA(ErV)
+    else if (present(Er)) then
+      OcA = mk_OcA(Er)
+    else
+      stop 'precalcProbs needs either Er or ErV'
+    endif 
 
     ! probabilities actual genotypes under HWE
     allocate(AHWE(0:2,nSnp))
@@ -88,13 +102,6 @@ contains
     AKA2P(2,1,:) = dble((/ 0.0, 0.25,0.5 /))
     AKA2P(2,2,:) = dble((/ 0.0, 0.5, 1.0 /))
     
-    ! Probability observed genotype (dim2) conditional on actual genotype (dim1)
-    ! (ErrFlavour' = 2.0)
-    OcA(:,-1) = 1.0D0      ! missing 
-    OcA(0, 0:2) = (/ 1-Er, Er -(Er/2)**2, (Er/2)**2 /)   ! act=0
-    OcA(1, 0:2) = (/ Er/2, 1-Er, Er/2 /)                      ! act=1
-    OcA(2, 0:2) = (/ (Er/2)**2, Er -(Er/2)**2,  1-Er /)  ! act=2
-    
     ! probabilities observed genotypes under HWE  + genotyping error pattern
     allocate(OHWE(-1:2,nSnp))
     forall (l=1:nSnp, i=-1:2)  OHWE(i,l) = SUM( OcA(:,i) * AHWE(:, l) ) 
@@ -113,6 +120,34 @@ contains
 
   end subroutine PreCalcProbs
   
+  
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ! Observed Conditional on Actual matrix, from Er scalar or ErV vector
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  
+  function mk_OcA_s(Er)  result(OcA)
+    double precision :: OcA(0:2,-1:2)
+    double precision, intent(IN) :: Er
+    
+    ! Probability observed genotype (dim2) conditional on actual genotype (dim1)
+    ! (ErrFlavour' = 2.9)
+    OcA(:,-1) = 1.0D0      ! missing 
+    OcA(0, 0:2) = (/ 1-Er     , Er-(Er/2)**2, (Er/2)**2 /)  ! act=0
+    OcA(1, 0:2) = (/ Er/2     , 1-Er        , Er/2 /)       ! act=1
+    OcA(2, 0:2) = (/ (Er/2)**2, Er-(Er/2)**2, 1-Er /)       ! act=2   
+  end function mk_OcA_s
+  
+  function mk_OcA_v(Er)  result(OcA)
+    double precision :: OcA(0:2,-1:2)
+    double precision, intent(IN) :: Er(3)  ! hom|other hom, het|hom, and hom|het
+    
+    ! Probability observed genotype (dim2) conditional on actual genotype (dim1)
+    ! (ErrFlavour' = 2.9)
+    OcA(:,-1) = 1.0D0      ! missing 
+    OcA(0, 0:2) = (/ 1-Er(1)-Er(2), Er(2)    , Er(1) /)          ! act=0
+    OcA(1, 0:2) = (/ Er(3)        , 1-2*Er(3), Er(3) /)          ! act=1
+    OcA(2, 0:2) = (/ Er(1)        , Er(2)    , 1-Er(1)-Er(2) /)  ! act=2   
+  end function mk_OcA_v 
   
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ! print timestamp, without carriage return
@@ -138,11 +173,20 @@ contains
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   ! print text, preceded by timestamp
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~    
-    subroutine printt(text)
-      character(len=*), intent(IN) :: text
-    
+    subroutine printt(text, int)
+      character(len=*), intent(IN), optional :: text
+      integer, intent(IN), optional :: int   ! e.g. counter in a loop
+      character(len=10) :: intchar
+         
       call timestamp()
-      print *, text
+      if (present(text) .and. present(int)) then
+        write(intchar,'(i10)') int
+        print *, text//adjustl(trim(intchar))
+      else if (present(text)) then
+        print *, text
+      else if (present(int)) then
+        print *, int
+      endif
     
     end subroutine printt
 
