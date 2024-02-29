@@ -19,6 +19,7 @@ parallel_impute <- function(geno_file = NA,      # path to genotype file, withou
   current_dir <- getwd()
   if (dirname(geno_file) == '.')  geno_file <- file.path(current_dir, geno_file)
   if (dirname(pedigree_file) == '.')  pedigree_file <- file.path(current_dir, pedigree_file)
+  if (dirname(output_file) == '.')  output_file <- file.path(current_dir, output_file)
 
   if (!dir.exists(working_dir))  dir.create(working_dir)
 
@@ -80,6 +81,9 @@ parallel_impute <- function(geno_file = NA,      # path to genotype file, withou
   setwd(working_dir)
   library(dplyr)
 
+  # run ped cleaning on full dataset
+  # TODO
+
   # divide SNPs into (nearly) equal batches
   map <- read.table(glue::glue("{geno_file}.map"))
   n_snps <- nrow(map)
@@ -136,6 +140,7 @@ parallel_impute <- function(geno_file = NA,      # path to genotype file, withou
   # NOTE: these files may possibly to get too big to be handled (comfortably) by R,
   # then they need to be combined using cat & headers somehow discarded
   # https://www.tutorialspoint.com/how-to-append-contents-of-multiple-files-into-one-file-on-linux
+  if (!quiet)  message('combining edit lists ...')
   edits_L <- list()
   for (x in 1:n_cores) {
     edits_L[[x]] <- read.table(glue::glue("{batch_names[x]}.edits"), header=TRUE)
@@ -148,12 +153,14 @@ parallel_impute <- function(geno_file = NA,      # path to genotype file, withou
 
 
   # === apply edits to big genotype file  ===
-  system(glue::glue('{install_dir}/imputator {imp_args} ',  # repeat, in case it includes outFormat
-                   '--geno {geno_file} --edits-in combined.edits ',
-                   '--informat PED --quiet'))
+  if (!quiet)  message('applying edits ...')
+  system(glue::glue('{install_dir}/imputator {imputator_args} ',  # repeat, in case it includes outFormat
+                   '--geno-in {geno_file} --edits-in combined.edits ',
+                   '--informat PED --quiet --geno-out {output_file}'))
 
 
   # === clean up  ===
   system('rm snp_batch_*.txt geno_batch_*.ped geno_batch_*.map batch_*.edits')
   setwd(current_dir)
+
 }
