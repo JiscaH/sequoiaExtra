@@ -15,7 +15,7 @@ module global_variables
   use sqa_general, ONLY: ishort, nchar_ID
   implicit none
 
-  character(len=30), parameter :: version = "Imputator v0.3.2 (28 Feb 2024)"
+  character(len=30), parameter :: version = "Imputator v0.3.3 (22 March 2024)"
   integer, parameter :: chunk_size_large = 100, chunk_size_small=10
   integer :: nIndG, nInd_max, nIndT, nSnp, nMatings, nMat_max
   integer(kind=ishort), allocatable :: Geno(:,:)
@@ -950,7 +950,7 @@ contains
     !      else
             g_new = -1
      !     endif
-          write(unit_log, '(i9,2x,a9,2x,f9.5,2x,i9,2x,a40,2(i5,2x),3(3f9.5,2x))') l, SNP_names(l), &
+          write(unit_log, '(i9,2x,a40,2x,f9.5,2x,i9,2x,a40,2(i5,2x),3(3f9.5,2x))') l, SNP_names(l), &
            Threshold, i, pop(i)%ID, Gl(i), g_new, exp(Gprob(:,i)), exp(lp_ant(:,i)), exp(i_ap(2,:))
           Gl(i) = g_new
   !      else if (any(i_ap(:,Gl(i)) < lp_err) .and. all(i_ap(:,Gl(i)) < ref_unif)) then
@@ -1012,7 +1012,7 @@ contains
         else
           g_new = MAXLOC(Gprob(:,i), DIM=1, KIND=ishort) -1_ishort
         endif
-         write(unit_log, '(i9,2x,a9,2x,f9.5,2x,i9,2x,a40,2(i5,2x),3(3f9.5,2x))') l, SNP_names(l), &
+         write(unit_log, '(i9,2x,a40,2x,f9.5,2x,i9,2x,a40,2(i5,2x),3(3f9.5,2x))') l, SNP_names(l), &
          Threshold, i, pop(i)%ID, Gl(i), g_new, exp(Gprob(:,i)), exp(lp_ant(:,i)), exp(get_post(i))
         Gl(i) = g_new
       enddo 
@@ -1566,7 +1566,7 @@ contains
            case ('--impute-all')
             do_impute_all = .TRUE.
             
-          case ('--quick')
+          case ('--quick', '--just-parents')
             do_quick = .TRUE.
 
           case ('--when-in-doubt')
@@ -1655,7 +1655,9 @@ contains
                     '                        .geno + .id'                 
     print '(a)',    '  --pedigree <filename>  file with pedigree, with columns id-parent1-parent2.',&
                     '                          Default: Pedigree.txt'
-    print '(a)',    '  --no-pedigree        impute without pedigree, use `--when-in-doubt` everywhere'  
+    print '(a)',    '  --quick              base imputation on parent genotypes only, no iterative peeling' 
+    print '(a)',    '  --just-parents       synonym of --quick'      
+    print '(a)',    '  --no-pedigree        impute without pedigree, use `--when-in-doubt` everywhere'     
     print '(a)',    '  --err <value>        presumed genotyping error rate',&
                     '                        (Will be estimated from data in future version)'  
      print '(a)',    '  --errV <3 values>   alternative to --err: P(observed|actual) for',&
@@ -1674,7 +1676,7 @@ contains
                     '                        Imputation (Future version will use set of decreasing tresholds)'
     print '(a)',    '  --no-impute          no imputation' 
     print '(a)',    '  --impute-all         impute all individuals in the pedigree (default: only those in genotype file)'
-    print '(a)',    '  --quick              base imputation on parent genotypes only, no iterative peeling'  
+    
     print '(a)',    '  --when-in-doubt <x>  inference when 2 genotypes are equally likely (e.g. offspring of',&
                     '                         hom x het): "het" (default), "hom", or "com" (most common',&
                     '                         genotype at that SNP)'  
