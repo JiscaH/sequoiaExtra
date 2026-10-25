@@ -34,8 +34,9 @@ module Global_variables
   integer :: nInd, nSnp, maxOH, maxDIF
   double precision :: minProb
   integer, parameter :: nchar_filename = 2000, nRel=6
+  integer, parameter :: nchar_ID = 40   ! maximum length of IDs
   logical :: quiet, DoProbs
-  character(len=20), allocatable, dimension(:) :: Id
+  character(len=nchar_ID), allocatable, dimension(:) :: Id
   logical, allocatable, dimension(:) :: skip
   integer(kind=1), allocatable, dimension(:,:) :: Geno
   integer, parameter :: ik8 = selected_int_kind(8)
@@ -703,7 +704,7 @@ subroutine find_pairs(FileName_part, focal)
   character(len=nchar_filename), intent(IN) :: FileName_part 
   integer, intent(IN) :: focal  ! 0=self (duplicates), 1=PO, 2=FS, 3=GP, 4=HA, 5=U
   character(len=nchar_filename+7) :: FileName
-  integer :: i,j, nPairs, cnt_ij, max_cnt, Lscored(3)
+  integer :: i,j, f,o, nPairs, cnt_ij, max_cnt, Lscored(3)
   double precision :: probs_ij(nRel)
   character(len=:), allocatable :: summary_lbl
   character(len=:), allocatable :: nx
@@ -734,18 +735,24 @@ subroutine find_pairs(FileName_part, focal)
   cnt_ij = 0
   open(unit=201, file=trim(FileName), status='unknown')
     if (DoProbs) then
-      write(201, '(2a7, 2a20, 5X, 4a10, 6(5X, a7))') 'row1', 'row2', 'ID1', 'ID2', nx, &
+      write(201, '(2(a9,1X), 2(a40,1X), 4(a9,1X), 6(a11,1X))') 'row1', 'row2', 'ID1', 'ID2', nx, &
        'Snpd1', 'Snpd2', 'SnpdBoth', &
        'prob_S ', 'prob_PO', 'prob_FS', 'prob_GP', 'prob_HA', 'prob_UU'
     else
-      write(201, '(2a7, 2a20, 5X, 4a10)') 'row1', 'row2', 'ID1', 'ID2', nx, &
+      write(201, '(2(a9,1X), 2(a40,1X), 4(a9,1X))') 'row1', 'row2', 'ID1', 'ID2', nx, &
        'Snpd1', 'Snpd2', 'SnpdBoth'
     endif
   
-    do i=1, nInd-1
-      if (.not. quiet .and. Modulo(i, 5000)==0)  print *, i
-      do j=i+1, nInd
-        if (skip(i) .and. skip(j))  cycle
+    ! Only loop over the focal individuals (not skipped by --only) and compare each with everyone,
+    ! instead of visiting all nInd^2/2 pairs. Each pair is still handled once, as i < j.
+    do f=1, nInd
+      if (skip(f))  cycle
+      if (.not. quiet .and. Modulo(f, 5000)==0)  print *, f
+      do o=1, nInd
+        if (o == f)  cycle
+        if (.not. skip(o) .and. o < f)  cycle   ! both focal: pair already done when f was o
+        i = min(f, o)
+        j = max(f, o)
         if (focal==0) then
           cnt_ij = nDiffer(i,j)
         else if (focal==1) then
@@ -762,9 +769,9 @@ subroutine find_pairs(FileName_part, focal)
         Lscored(2) = COUNT(Geno(:,j) >= 0)
         Lscored(3) = nBothSNPd(i,j)  
         if (DoProbs) then
-          write(201, '(2i7, 5X, 2a20, 4i10, 6f12.4)') i,j, Id(i), Id(j), cnt_ij, Lscored, probs_ij
+          write(201, '(2(i9,1X), 2(a40,1X), 4(i9,1X), 6(f11.4,1X))') i,j, Id(i), Id(j), cnt_ij, Lscored, probs_ij
         else
-          write(201, '(2i7, 5X, 2a20, 4i10)') i,j, Id(i), Id(j), cnt_ij, Lscored
+          write(201, '(2(i9,1X), 2(a40,1X), 4(i9,1X))') i,j, Id(i), Id(j), cnt_ij, Lscored
         endif
         nPairs = nPairs +1         
       enddo
@@ -802,6 +809,7 @@ subroutine ReadGeno(GenoFileName)
   character(len=nchar_filename), intent(IN) :: GenoFileName
   integer :: i, l
   integer(kind=1), allocatable, dimension(:) :: GenoV
+  character(len=200) :: tmpId
 
   nSnp = FileNumCol(trim(GenoFileName)) -1  ! column 1 = IDs
   nInd = FileNumRow(trim(GenoFileName))  
@@ -817,7 +825,13 @@ subroutine ReadGeno(GenoFileName)
     if (nInd > 5000) then
       if (.not. quiet .and. MODULO(i,2000)==0)  write(*,'(i10, 2x)', advance='no') i
     endif
-    read (101,*)  Id(i), GenoV
+    read (101,*)  tmpId, GenoV
+    if (len_trim(tmpId) > nchar_ID) then
+      write(*, '("ID ", a, " on line ", i0, " is longer than the maximum of ", i0, " characters!")') &
+        trim(tmpId), i, nchar_ID
+      error stop
+    endif
+    Id(i) = tmpId
     do l=1,nSnp
       if (GenoV(l)>=0) then
         Geno(l,i) = GenoV(l)  
@@ -840,7 +854,7 @@ subroutine ReadOnlyList(FileName)
 
   character(len=nchar_filename), intent(IN) :: FileName
   integer :: x, i, nrows, IOerr
-  character(len=20) :: tmpC
+  character(len=nchar_ID) :: tmpC
 
   nrows = FileNumRow(trim(FileName))  ! no header
 
@@ -851,7 +865,7 @@ subroutine ReadOnlyList(FileName)
     do x=1, nrows
       read(103, *,IOSTAT=IOerr)  tmpC
       if (IOerr > 0) then
-        print *, "Wrong input in file "//trim(FileName)//" on line ", i
+        print *, "Wrong input in file "//trim(FileName)//" on line ", x
         stop
       else if (IOerr < 0) then
         exit   ! EOF
